@@ -353,3 +353,27 @@ build removed the Subaru window glow and broad bright-car camera pass. Other
 passes, track-to-menu transitions, distant shadows and performance remained correct.
 Diagnostics and cached probe shaders are excluded. The separately reported AMD
 driver pipeline-compiler crash is not established as fixed by this change.
+
+## Exclude race and attract-replay buffers from menu snapshots (0080)
+
+The 1 MiB CPU snapshot path now also checks native race-session lifetime. The
+idle replay loads through `leavedemo` and `AutoDemo.adl` while the script-based
+project classifier can still say menus, allowing CPU snapshots of GPU-written
+race data and producing vertex explosions. The guard disables snapshots before
+`RaceInterface.startSession` and releases them after `endSession` returns. It
+retains the existing race-project exclusion and does not alter compiler policy.
+
+A generation token prevents an older session's end from clearing a newer start.
+Both hooks validate the CUSA03220 v1.69 entry bytes. If either cannot be installed,
+CPU snapshots remain disabled rather than using the unsafe menu path.
+
+The Release candidate built and passed 2,610 local import bindings. Session tests
+cover replay entry without a script reload, repeated starts, stale retirement,
+and 1,000 concurrent replacement cases. The automatic idle race replay was then
+observed through its native session start, and the user confirmed correct rendering.
+The unrelated late-event investigation is ongoing; no timing hooks, trace flags,
+probe shaders, renderer binaries or launcher changes are included in this patch.
+
+To run the host-only session test from an x64 Visual Studio developer prompt:
+`cl /EHsc /std:c++20 /I path\to\patched-shadGT renderer\menu-snapshot-tests\session_test.cpp /Fe:session_test.exe`
+then run `session_test.exe`. Compile without NDEBUG so assertions remain enabled.
