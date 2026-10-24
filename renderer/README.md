@@ -352,3 +352,16 @@ Matched Dragon Trail Time Trial results-screen samples with streaming off reduce
 on the tested NVIDIA machine. Two track/menu cycles retained correct shadows,
 geometry, lighting and sparks. These are local results, not a guarantee for all GPUs.
 Temporary timing, upload-chunk comparisons, shader probes and binaries are excluded.
+
+## Idle keyboard close and event entry (0077)
+
+Skip the keyboard close routine only when its guarded state read reports idle.
+Normal race entry previously spent about five seconds closing a dialog that was
+not open, allowing the race to advance behind the fade. Active, pending and error
+states retain the original close routine; a failed state read also forwards it.
+The hook checks the original entry bytes and is enabled by default.
+
+The local comparison reduced idle close from 5,031 ms to 0-15 ms; normal race
+entry and UI loading were confirmed improved. Active text-entry behavior and
+missing race music remain unverified. This patch contains no timing probes,
+shader changes, compiler policy changes or game data.
