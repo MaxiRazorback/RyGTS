@@ -78,7 +78,7 @@ libs\  RyGT runtime libraries (kernel, libc, save data, audio, input, ...)
     save data mount until the boot screen is drawn (GT Sport's boot script otherwise crashes).
 - **GT Sport guide** ([docs/gt-sport](docs/gt-sport)): setup from your own dump.
 
-The renderer lives in [shadGT, branch `ryty-gpu`](https://github.com/mlgprorektm8/shadGT/tree/ryty-gpu)
+The renderer lives in [shadGT, branch `ryty-gpu`](https://gitlab.com/rygt-team/shadGT/ryty-gpu)
 (`ryty_gpu/`). It builds shadGT's video output, Gnm driver and Vulkan renderer as
 `libSceVideoOut.prx`, plus shadGT's audio, NP and other libraries for RyGT. It carries the GT
 Sport rendering fixes and the performance work (Vulkan calls on their own thread, cheaper buffer
