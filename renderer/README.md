@@ -365,3 +365,7 @@ The local comparison reduced idle close from 5,031 ms to 0-15 ms; normal race
 entry and UI loading were confirmed improved. Active text-entry behavior and
 missing race music remain unverified. This patch contains no timing probes,
 shader changes, compiler policy changes or game data.
+
+## Native performance follow-up
+
+Patch 0081 makes unused Native staging rings allocate on demand; see [RAM-ALLOCATION.md](RAM-ALLOCATION.md). Patch 0082 adds worker-owned compiler scheduling and bounded heavy-job admission; see [COMPILER-SCHEDULING.md](COMPILER-SCHEDULING.md).
