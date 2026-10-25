@@ -381,6 +381,7 @@ then run `session_test.exe`. Compile without NDEBUG so assertions remain enabled
 ## Upload and first-compilation depth correction
 
 Patch 0083 snapshots CPU region uploads and preserves depth-only bakes when color output is disabled; see [UPLOAD-DEPTH-FIXES.md](UPLOAD-DEPTH-FIXES.md).
+
 ## Native pattern-transfer fills (0076)
 
 Native recognizes the bounded two-word buffer-fill shader and records equivalent
@@ -411,3 +412,15 @@ shader changes, compiler policy changes or game data.
 ## Native performance follow-up
 
 Patch 0081 makes unused Native staging rings allocate on demand; see [RAM-ALLOCATION.md](RAM-ALLOCATION.md). Patch 0082 adds worker-owned compiler scheduling and bounded heavy-job admission; see [COMPILER-SCHEDULING.md](COMPILER-SCHEDULING.md).
+## Layered render-target reuse (0077)
+
+Native checks each mip's per-layer byte footprint, offset, pitch and padded height
+before reusing a layered depth or color target. Single-layer reuse and compatible
+shadow-array views with different layer counts remain supported.
+
+The captured failure reused a 480x270 two-layer target for a 180x170 request with
+a different slice footprint. Eight focused cases include this mismatch and
+compatible 14/13-layer shadow views. The Release build and 2,610 import bindings
+passed, and transmission/loading, showroom and track checks rendered correctly.
+This does not claim to resolve every intermittent red/green defect. Only the
+layout correction is included; probes, traces and performance experiments stay local.
