@@ -377,3 +377,7 @@ probe shaders, renderer binaries or launcher changes are included in this patch.
 To run the host-only session test from an x64 Visual Studio developer prompt:
 `cl /EHsc /std:c++20 /I path\to\patched-shadGT renderer\menu-snapshot-tests\session_test.cpp /Fe:session_test.exe`
 then run `session_test.exe`. Compile without NDEBUG so assertions remain enabled.
+
+## Upload and first-compilation depth correction
+
+Patch 0083 snapshots CPU region uploads and preserves depth-only bakes when color output is disabled; see [UPLOAD-DEPTH-FIXES.md](UPLOAD-DEPTH-FIXES.md).
