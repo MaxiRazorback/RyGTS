@@ -1043,7 +1043,7 @@ namespace RyGT
             heroText.Controls.Add(new Label
             {
                 Text = "On Windows, from your own decrypted dump (CUSA03220), its 1.69 update and your PS4 firmware's " +
-                       "system modules and fonts. Set up converts the game once; Play starts it.",
+                       "system modules. PS4 fonts are optional. Set up converts the game once; Play starts it.",
                 AutoSize = true, MaximumSize = new Size(520, 0), BackColor = Color.Transparent, ForeColor = Color.FromArgb(214, 214, 214),
                 Tag = "heading", Font = new Font("Segoe UI", 10f), Margin = new Padding(2, 0, 0, 18)
             });
@@ -1067,7 +1067,14 @@ namespace RyGT
             game = AddRow(fileTable, 0, "Game (CUSA03220)", settings.Game);
             update = AddRow(fileTable, 1, "Update 1.69 (if separate)", settings.Update);
             modules = AddRow(fileTable, 2, "System modules", settings.Modules);
-            fonts = AddRow(fileTable, 3, "Fonts", settings.Fonts);
+            fonts = AddRow(fileTable, 3, "Fonts (optional)", settings.Fonts);
+            files.Controls.Add(new Label
+            {
+                Text = "Without PS4 dumped fonts, some in-game UI fonts may not draw or appear correctly.",
+                AutoSize = true, MaximumSize = new Size(520, 0),
+                ForeColor = Dark.DimText, BackColor = Color.Transparent,
+                Margin = new Padding(0, 6, 0, 0)
+            });
 
             var logCard = Section(home, "Set up log", Dark.Card); // solid: its text box cannot be see-through
             logCard.Margin = new Padding(0);
@@ -1352,6 +1359,7 @@ namespace RyGT
             // while its own are built (D10), so it has no option any more.
 
             var extras = Section(right, "Enhancements");
+            AddOption(extras, "Disable motion blur", "GPU", "disable_motion_blur", false);
             AddOption(extras, "PS4 Pro mode", "GPU", "ps4_pro", false);
             AddOption(extras, "Draw the UI at screen resolution", "GPU", "ui_hires", false);
             AddOption(extras, "HDR (experimental; needs Windows HDR on)", "GPU", "hdr_allowed", false);
@@ -2250,7 +2258,11 @@ namespace RyGT
                 throw new Exception("This build is for update 1.69, but the game is " + version + ". Pick the 1.69 update folder too.");
 
             string fontDir, font2Dir;
-            FindFonts(settings.Fonts, out fontDir, out font2Dir);
+            fontDir = font2Dir = null;
+            if (!String.IsNullOrWhiteSpace(settings.Fonts))
+                FindFonts(settings.Fonts, out fontDir, out font2Dir);
+            else
+                Log("Note: PS4 fonts are optional; without them, some in-game UI fonts may not draw or appear correctly.");
             var firmware = new Dictionary<string, string>();
             foreach (var name in FirmwareModules)
             {
@@ -2301,9 +2313,12 @@ namespace RyGT
             LinkGameFiles(baseDir, updateDir);
 
             // 4. Fonts.
-            SetStatus("Copying the fonts...");
-            CopyDirectory(fontDir, Path.Combine(root, "sys", "common", "font"));
-            CopyDirectory(font2Dir, Path.Combine(root, "sys", "common", "font2"));
+            if (fontDir != null && font2Dir != null)
+            {
+                SetStatus("Copying the fonts...");
+                CopyDirectory(fontDir, Path.Combine(root, "sys", "common", "font"));
+                CopyDirectory(font2Dir, Path.Combine(root, "sys", "common", "font2"));
+            }
 
             // 5. Offline livery and decal scripts, made from this game's own files.
             SetStatus("Making the offline livery scripts from your game files...");
