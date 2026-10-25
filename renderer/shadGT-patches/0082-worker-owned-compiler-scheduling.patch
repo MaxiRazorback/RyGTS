@@ -202,16 +202,29 @@ index ec2d34a..fd1f6e0 100644
  #include "video_core/renderer_vulkan/liverpool_to_vk.h"
  #include "video_core/renderer_vulkan/spirv_check.h"
  #include "video_core/renderer_vulkan/vk_instance.h"
-@@ -125,7 +127,8 @@ public:
+@@ -125,8 +127,8 @@ public:
  private:
      void Run(std::stop_token stop, u32 index) {
          Common::SetCurrentThreadName(fmt::format("shadGT:ShaderTranslate{}", index).c_str());
 -        Common::PreferEfficiencyCores(); // PERF-097
+-        bool below_game = false;
 +        Common::AllowAllCores();
 +        Common::SetCurrentThreadPriority(Common::ThreadPriority::Low);
          while (!stop.stop_requested()) {
              std::shared_ptr<TranslateJob> job;
              {
+@@ -158,11 +160,6 @@
+                 job = std::move(queue.front());
+                 queue.pop_front();
+             }
+-            if (const bool low = CompileBelowGame(); low != below_game) { // PERF-310
+-                below_game = low;
+-                Common::SetCurrentThreadPriority(low ? Common::ThreadPriority::Low
+-                                                     : Common::ThreadPriority::Normal);
+-            }
+             try {
+                 // Release temporary IR allocations after each job, including failed jobs.
+                 Shader::Pools pools;
 @@ -304,11 +307,10 @@ PrecompileProgress GetPrecompileProgress() {
  class PipelineCache::PipelineBuildWorkers {
  public:
@@ -309,7 +322,7 @@ index ec2d34a..fd1f6e0 100644
 -                    Common::PreferEfficiencyCores();
 -                }
 -            }
--            const bool low = !boosted && (background || backlog);
+-            const bool low = !boosted && (background || backlog || CompileBelowGame());
 -            if (low != low_priority) {
 -                low_priority = low;
 -                Common::SetCurrentThreadPriority(low_priority ? Common::ThreadPriority::Low

@@ -1,10 +1,7 @@
 diff --git a/src/shader_recompiler/backend/spirv/emit_spirv_floating_point.cpp b/src/shader_recompiler/backend/spirv/emit_spirv_floating_point.cpp
 --- a/src/shader_recompiler/backend/spirv/emit_spirv_floating_point.cpp
 +++ b/src/shader_recompiler/backend/spirv/emit_spirv_floating_point.cpp
-@@ -76,8 +76,15 @@
-     if (ctx.profile.supports_trinary_minmax) {
-         return ctx.OpFMid3AMD(ctx.F32[1], a, b, c);
-     }
+@@ -79,5 +79,12 @@
 +    const Id min_ab{ctx.OpNMin(ctx.F32[1], a, b)};
      const Id mmx{ctx.OpNMin(ctx.F32[1], ctx.OpNMax(ctx.F32[1], a, b), c)};
 -    return ctx.OpNMax(ctx.F32[1], ctx.OpNMin(ctx.F32[1], a, b), mmx);

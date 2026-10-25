@@ -1,19 +1,12 @@
 diff --git a/ryty_gpu/ryty_game_patch.cpp b/ryty_gpu/ryty_game_patch.cpp
 --- a/ryty_gpu/ryty_game_patch.cpp
 +++ b/ryty_gpu/ryty_game_patch.cpp
-@@ -28,6 +28,8 @@
- 
- #include "common/perf_monitor.h"
- #include "common/types.h"
-+#include "ryty_gpu/native/entry_hook.h"
-+#include "ryty_gpu/native/menu_snapshot_session.h"
- #include "core/debug_state.h"
+@@ -34,3 +34,4 @@
  #include "core/memory.h"
+ #include "ryty_gpu/native/entry_hook.h"
++#include "ryty_gpu/native/menu_snapshot_session.h"
  #include "input/trigger_feedback.h"
-@@ -1270,7 +1272,33 @@
-     Apply(base, Patch{0xf387b2, {0x20, 0xd1}, {0xb1, 0x01}, "GTS-009 4K UI images (2/2)"});
- }
- 
+@@ -1273,2 +1275,28 @@
 +// Menu CPU snapshots are unsafe during every native race session, including
 +// attract replays which can reuse scripts without updating the project hint.
 +using SnapshotSessionFn = void(PS4_SYSV_ABI*)(u64, u64, s32, u64);
@@ -41,9 +34,7 @@ diff --git a/ryty_gpu/ryty_game_patch.cpp b/ryty_gpu/ryty_game_patch.cpp
 +
  void RytyApplyGamePatches() {
 +    InstallMenuSnapshotSessionGuard(reinterpret_cast<u8*>(GetModuleHandleA(nullptr)));
-     InstallWideCamera(reinterpret_cast<u8*>(GetModuleHandleA(nullptr)));
-     InstallTriggerTelemetry(reinterpret_cast<u8*>(GetModuleHandleA(nullptr)));
-     InstallUi4kImages(reinterpret_cast<u8*>(GetModuleHandleA(nullptr)));
+     InstallIdleKeyboardClose(reinterpret_cast<u8*>(GetModuleHandleA(nullptr)));
 @@ -1316,4 +1344,7 @@
  bool RytyGtsInRace() {
      return g_in_race.load(std::memory_order_relaxed);

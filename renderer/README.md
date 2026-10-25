@@ -149,8 +149,8 @@ of carrying shadGT additions here; the shadGT source tree is not vendored into R
 
 The patch includes the dedicated camera sources, build integration and the host
 startup, overlay and input connections. It does not include compiled modules.
-Existing build options are retained; the camera target additionally links Windows
-`bcrypt` for executable validation.
+Existing build options are retained. Camera compatibility is checked using the
+mapped executable's camera signatures, sections and hook targets, not a whole-file hash.
 
 For controls, ranges and presets, see [Camera Manager](../docs/user/CAMERA_MANAGER.md).
 For the standalone Windows tests, see [camera-manager-tests](camera-manager-tests/README.md).
@@ -424,3 +424,63 @@ compatible 14/13-layer shadow views. The Release build and 2,610 import bindings
 passed, and transmission/loading, showroom and track checks rendered correctly.
 This does not claim to resolve every intermittent red/green defect. Only the
 layout correction is included; probes, traces and performance experiments stay local.
+## Background optimization (0073-0075)
+
+Patches 0073-0075 apply after 0072, in order (they do not depend on it). They
+were measured on a Ryzen 5 5500 (6 cores, 12 threads, no efficiency cores) with an
+RX 7600 (driver 26.8.1), in a Time Attack at Dragon Trail (`permanent_01`), using the
+renderer's own logs (PERF-031, PERF-047, NAT-100).
+
+- 0073 (PERF-310): in a race, shader translation and pipeline builds run below the
+  game's priority. On CPUs without efficiency cores PERF-097 keeps nothing apart: a
+  burst of 500-1,200 new pipelines took 3-4 threads from GT Sport's twelve job threads
+  and the recorder, and the race fell to 12-17 fps until it was done. Draws are skipped
+  while their pipeline builds (PERF-076), so compiles only take longer. Measured in two
+  races: before, 35 two-second windows with such a burst averaged 15.8 fps; after, the
+  one window with a burst ran at 41 fps.
+  `RYGT_COMPILE_PRIORITY=normal` keeps them level.
+- 0074 (PERF-314): native write-backs (NAT-112) reuse each picture's re-tiling
+  buffers. Each tiled write-back created three buffers (linear, tiled, tiling
+  parameters) about 2,600 times a second; the picture's size and tiling never change
+  and every write-back is recorded on one queue, ordered by its barriers (the last one
+  now also covers the next write-back's transfer writes). Write-back time on the
+  recorder: about 700 -> 470 ms per 10 s.
+- 0075 (PERF-316): with the native renderer, game job threads prepare draws (OPT-010/012)
+  by default instead of only with `RYGT_NATIVE_PREPARE=1` and `RYGT_NATIVE=1`; it follows
+  the launcher's renderer choice. 97.5% of draws were prepared, decoding a submission went
+  from 7.0 to 5.6 ms, and the Time Attack from 39.9 to 44.6 fps (43.5 in a second run).
+  `RYGT_NATIVE_PREPARE=0` turns it off.
+
+None of the three is specific to AMD GPUs; 0073 matters most on CPUs without
+efficiency cores, and 0075 applies wherever the native renderer is used. The four
+changed sources were compiled with the Release flags against the patched tree. The
+figures above come from the RX 7600 PC; other CPUs and GPUs were not measured.
+
+## AMD 9000 fix and automatic shader store version (0076-0080)
+
+Patches 0076-0080 apply after 0075, in order.
+
+- 0076 (FIX-215): MED3 with a quiet NaN on AMD's trinary path (`FMid3AMD`, which leaves a NaN
+  operand undefined) returns the minimum of the numeric operands, as GCN does.
+- 0077 (FIX-216): MIN3/MAX3 use `NMin`/`NMax` instead of `FMin3AMD`/`FMax3AMD`, so a NaN
+  operand is ignored as on GCN.
+- 0078 (AMD-311): `SHADGT_AMD_VERTEX_ORDER=0..5` picks which vertex `InterpolateAtVertexAMD`
+  reads for each barycentric weight of per-vertex inputs. 0 (the order an RX 7600 uses) unless set;
+  for checking other AMD GPUs.
+- 0079 (AMD-312): the GPU is detected (AMD proprietary driver and model name) and the shader
+  store version follows it. Radeon RX 9000 cards (RDNA4) use their own store version.
+- 0080 (AMD-313): Radeon RX 7000 cards (RDNA3) leave 0076/0077 out and use a store version of
+  their own; `SHADGT_AMD_NAN_RULES=0/1` overrides for any GPU.
+
+Tested by users of the local test builds: on an RX 9060 XT the road at Brands Hatch was drawn as
+streaks with a store translated by an earlier build and correctly once the store was translated
+again with these patches. On an RX 7600, freshly translated shaders with 0076/0077 drew the car
+purple again; with them off (0080) the car was right. Other GPUs were not tested.
+
+## Combined AMD shader-store integration
+
+The AMD RX 9000/RX 7000 profile and shader-store patches are combined with the existing generic MED3 correction and shader binary revisions. Patch 0076's valid implementation was restored from incoming commit f525c76 because dfda55d replaced that patch file with descriptive prose. The generic MED3 change remains in 0078; its context was narrowed so both AMD and generic paths apply.
+
+Event-start/replay patch contexts were rebased without changing their behavior. Worker scheduling retains the existing topology/memory limits and low priority for compiler workers; this supersedes PERF-310's older dynamic menu/race priority switching. Retiling-buffer reuse, background draw preparation, AMD-family store versions and profile switches are retained.
+
+Validation: the complete 0073-0083 series applies in filename order to the reconstructed baseline through 0072. The updated camera patch applies to its documented 1d13c88d base. Seven affected renderer translation units pass syntax checks and all five compiler queue/budget/lifetime tests pass. AMD hardware rendering still requires validation.

@@ -9,18 +9,13 @@ diff --git a/ryty_gpu/ryty_game_patch.cpp b/ryty_gpu/ryty_game_patch.cpp
  #include <cmath>
  #include <atomic>
  #include <chrono>
-@@ -30,6 +31,7 @@
+@@ -30,4 +31,5 @@
  #include "common/types.h"
  #include "core/debug_state.h"
  #include "core/memory.h"
 +#include "ryty_gpu/native/entry_hook.h"
  #include "input/trigger_feedback.h"
- 
- namespace Vulkan {
-@@ -1234,7 +1236,31 @@
- }
- } // namespace
- 
+@@ -1237,3 +1239,27 @@
 +// The page handoff closes the keyboard even when no dialog was opened.
 +// Calling the original close in state zero waits 300 yields before cleanup.
 +using OskCloseFn = void(PS4_SYSV_ABI*)(u64);
@@ -48,4 +43,3 @@ diff --git a/ryty_gpu/ryty_game_patch.cpp b/ryty_gpu/ryty_game_patch.cpp
 +    InstallIdleKeyboardClose(reinterpret_cast<u8*>(GetModuleHandleA(nullptr)));
      InstallWideCamera(reinterpret_cast<u8*>(GetModuleHandleA(nullptr)));
      InstallTriggerTelemetry(reinterpret_cast<u8*>(GetModuleHandleA(nullptr)));
-     InstallMirrorHalfRate(reinterpret_cast<u8*>(GetModuleHandleA(nullptr)));
