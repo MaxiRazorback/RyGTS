@@ -1,0 +1,253 @@
+--- a/src/video_core/buffer_cache/buffer_cache.cpp
++++ b/src/video_core/buffer_cache/buffer_cache.cpp
+@@ -20,6 +20,7 @@
+ #include <xxhash.h>
+ 
+ #include "common/alignment.h"
++#include "common/unmapped_allocations.h"
+ #include "common/io_file.h"
+ #include "common/perf_monitor.h"
+ #include "core/emulator_settings.h"
+@@ -328,6 +329,17 @@
+     u64 bytes = 0;
+     for (const auto& range : resident_ranges) bytes += (range.end - range.start) << block_shift;
+     return bytes;
++}
++
++u64 BufferCache::SparseFreedBytes() {
++    std::scoped_lock buffer_lock{mutex};
++    return sparse_freed_bytes;
++}
++
++void BufferCache::NoteArenaMapping(VAddr address, u64 size) {
++    if (!size || address > ~u64{0} - size) return;
++    std::scoped_lock lock{arena_unmap_mutex};
++    unmapped_arena_bytes.Subtract(address, size);
+ }
+ 
+ void BufferCache::TickFrame() {
+@@ -2331,6 +2343,8 @@
+ }
+ 
+ const Buffer* BufferCache::GetArena(u64 first_block, u64 last_block) {
++    // Conservatively cancel retirement if a range is used again through any obtain path.
++    NoteArenaMapping(first_block << block_shift, (last_block - first_block + 1) << block_shift);
+     const u64 first_page = first_block >> blocks_per_arena_page_shift;
+     const u64 last_page = last_block >> blocks_per_arena_page_shift;
+     ASSERT_MSG(last_page - first_page <= 1,
+@@ -3794,32 +3808,39 @@
+ void BufferCache::ReleaseUnmappedArenaMemory(VAddr address, u64 size) {
+     if (size == 0 || address > ~u64{0} - size) return;
+     std::scoped_lock buffer_lock{mutex};
+-    const u64 first = Common::AlignUp(address, u64{block_size}) >> block_shift;
+-    const u64 end = (address + size) >> block_shift;
+-    if (first >= end) return;
+-
+-    // One VkDeviceMemory allocation can back several disjoint resident ranges.
+-    // Release it only if ALL of its ranges are inside this explicit guest unmap.
++    {
++        std::scoped_lock lock{arena_unmap_mutex};
++        // Preserve byte coverage: several 16 KiB guest unmaps can retire a larger
++        // Vulkan sparse page. Remember only ranges actually backed by this cache.
++        resident_ranges.ForEachInRange(address >> block_shift,
++            ((address + size - 1) >> block_shift) + 1, [&](const Backing& range) {
++                const u64 begin = std::max(address, range.start << block_shift);
++                const u64 end = std::min(address + size, range.end << block_shift);
++                if (begin < end) unmapped_arena_bytes.Add(begin, end - begin);
++            });
++    }
+     std::map<vk::DeviceMemory, bool> whole;
+-    bool overlaps = false;
+-    for (const auto& range : resident_ranges) {
+-        const bool covered = range.start >= first && range.end <= end;
+-        auto [it, inserted] = whole.try_emplace(range.memory, true);
+-        it->second &= covered;
+-        overlaps |= covered;
+-    }
+-    if (!overlaps) return;
+     std::vector<Backing> released;
+     IntervalList<Backing> retained;
+-    for (const auto& range : resident_ranges) {
+-        if (whole[range.memory]) released.push_back(range);
+-        else retained.Add(range);
+-    }
+-    if (released.empty()) return;
+-
+-    // The recorder owns this call. Finish prior commands and their sparse binds
+-    // before removing backing memory; unload synchronization is intentionally rare.
++    const auto collect = [&] {
++        std::scoped_lock lock{arena_unmap_mutex};
++        whole = Common::FullyUnmappedAllocations(resident_ranges, [&](const Backing& range) {
++            return unmapped_arena_bytes.Contains(range.start << block_shift,
++                                                (range.end - range.start) << block_shift);
++        });
++        released.clear();
++        retained.Clear();
++        for (const auto& range : resident_ranges) {
++            if (whole[range.memory]) released.push_back(range);
++            else retained.Add(range);
++        }
++        return !released.empty();
++    };
++    if (!collect()) return;
++    // No marker lock across GPU submission/wait: map callbacks hold the guest registry.
+     scheduler.Finish();
++    // Submission callbacks may have changed cache residency; revalidate after finishing.
++    if (!collect()) return;
+     std::vector<ArenaBinds> unbinds;
+     unbinds.reserve(arenas.size());
+     for (const auto& arena : arenas) {
+@@ -3862,6 +3883,7 @@
+         const VAddr start = range.start << block_shift;
+         const u64 bytes = (range.end - range.start) << block_shift;
+         freed_bytes += bytes;
++        NoteArenaMapping(start, bytes);
+         runtime.FillBuffer(bda_pagetable_buffer.get(), range.start * sizeof(vk::DeviceAddress),
+                            (range.end - range.start) * sizeof(vk::DeviceAddress), 0u);
+         gpu_modified_ranges.Subtract(start, bytes);
+@@ -3876,6 +3898,7 @@
+     for (const auto& [allocation, complete] : whole) {
+         if (complete) device.freeMemory(allocation);
+     }
++    sparse_freed_bytes += freed_bytes;
+     LOG_DEBUG(Render_Vulkan, "Released {} MiB of unmapped sparse buffer backing", freed_bytes >> 20);
+ }
+ 
+--- a/src/video_core/buffer_cache/buffer_cache.h
++++ b/src/video_core/buffer_cache/buffer_cache.h
+@@ -75,6 +75,8 @@
+                          TextureCache& texture_cache, PageManager& tracker);
+     ~BufferCache();
+     u64 SparseResidentBytes();
++    u64 SparseFreedBytes();
++    void NoteArenaMapping(VAddr address, u64 size);
+ 
+     /// Returns a pointer to GDS device local buffer.
+     [[nodiscard]] const Buffer* GetGdsBuffer() const noexcept {
+@@ -651,6 +653,10 @@
+         }
+     };
+     IntervalList<Backing> resident_ranges;
++    // Map callbacks hold the guest registry: never take the buffer lock there.
++    std::mutex arena_unmap_mutex;
++    RangeSet unmapped_arena_bytes;
++    u64 sparse_freed_bytes = 0;
+ 
+     u32 arena_memory_type_index{};
+     u32 block_size{};
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -5101,6 +5101,7 @@
+ }
+ 
+ void Rasterizer::MapMemory(VAddr addr, u64 size) {
++    buffer_cache.NoteArenaMapping(addr, size);
+     {
+         std::scoped_lock lock{mapped_ranges_mutex};
+         mapped_ranges += decltype(mapped_ranges)::interval_type::right_open(addr, addr + size);
+--- a/src/video_core/renderer_vulkan/vk_common.cpp
++++ b/src/video_core/renderer_vulkan/vk_common.cpp
+@@ -12,3 +12,22 @@
+ 
+ // Store the dispatch loader here
+ VULKAN_HPP_DEFAULT_DISPATCH_LOADER_DYNAMIC_STORAGE
++
++#include <atomic>
++namespace Vulkan {
++static std::atomic<vk::DeviceSize> g_empty_vma_bytes_freed{};
++vk::DeviceSize EmptyVmaBytesFreed() {
++    return g_empty_vma_bytes_freed.load(std::memory_order_relaxed);
++}
++vk::DeviceSize TrimEmptyVmaBlocks(VmaAllocator allocator) {
++    const VkPhysicalDeviceMemoryProperties* props = nullptr;
++    vmaGetMemoryProperties(allocator, &props);
++    vk::DeviceSize freed = 0;
++    for (uint32_t i = 0; i < props->memoryTypeCount; ++i) {
++        if (!(props->memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) continue;
++        if (auto* blocks = allocator->m_pBlockVectors[i]) freed += blocks->TrimEmptyBlocks();
++    }
++    g_empty_vma_bytes_freed.fetch_add(freed, std::memory_order_relaxed);
++    return freed;
++}
++}
+--- a/src/video_core/renderer_vulkan/vk_common.h
++++ b/src/video_core/renderer_vulkan/vk_common.h
+@@ -21,3 +21,9 @@
+ 
+ #define VMA_STATIC_VULKAN_FUNCTIONS 0
+ #define VMA_DYNAMIC_VULKAN_FUNCTIONS 1
++
++VK_DEFINE_HANDLE(VmaAllocator)
++namespace Vulkan {
++vk::DeviceSize TrimEmptyVmaBlocks(VmaAllocator allocator);
++vk::DeviceSize EmptyVmaBytesFreed();
++}
+--- a/src/video_core/texture_cache/texture_cache.cpp
++++ b/src/video_core/texture_cache/texture_cache.cpp
+@@ -546,6 +546,8 @@
+ }
+ 
+ void TextureCache::UnmapMemory(VAddr cpu_addr, size_t size) {
++    if (empty_block_trim_after == std::chrono::steady_clock::time_point{})
++        empty_block_trim_after = std::chrono::steady_clock::now() + std::chrono::seconds{30};
+     SmallVector<ImageId, 16> deleted_images;
+     ForEachImageInRegion(cpu_addr, size, [&](ImageId id, Image&) { deleted_images.push_back(id); });
+     for (const ImageId id : deleted_images) {
+@@ -1667,6 +1669,10 @@
+     if (now - idle_gc_last_scan < seconds{1}) return;
+     idle_gc_last_scan = now;
+     TrimUnusedRecycledImages(instance.GetAllocator());
++    if (empty_block_trim_after != steady_clock::time_point{} && now >= empty_block_trim_after) {
++        Vulkan::TrimEmptyVmaBlocks(instance.GetAllocator());
++        empty_block_trim_after = {};
++    }
+     if (idle_gc_cutoff_tick == 0) return;
+ 
+     u32 freed = 0;
+@@ -1716,12 +1722,13 @@
+     LOG_DEBUG(Render_Vulkan,
+               "VRAM snapshot MiB: heap_usage={} budget={} sparse={} textures={} "
+               "gpu_written_textures={} recycled={} vma_alloc={} vma_blocks={} "
+-              "vma_slack={} unattributed={} imported_host={} images={}",
++              "vma_slack={} unattributed={} imported_host={} images={} sparse_freed_total={} empty_blocks_freed_total={}",
+               usage >> 20, budget >> 20, sparse >> 20, textures >> 20, gpu_written >> 20,
+               RecycledImageBytes() >> 20, allocations >> 20, blocks >> 20,
+               (blocks > allocations ? blocks - allocations : 0) >> 20,
+               (usage > blocks + sparse ? usage - blocks - sparse : 0) >> 20,
+-              direct ? direct->ImportedHostBytes() >> 20 : 0, images);
++              direct ? direct->ImportedHostBytes() >> 20 : 0, images,
++              buffer_cache.SparseFreedBytes() >> 20, Vulkan::EmptyVmaBytesFreed() >> 20);
+ }
+ 
+ void TextureCache::RunGarbageCollector() {
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -445,6 +445,7 @@
+     std::chrono::steady_clock::time_point idle_gc_last_scan{};
+     u64 idle_gc_previous_tick = 0;
+     u64 idle_gc_cutoff_tick = 0;
++    std::chrono::steady_clock::time_point empty_block_trim_after{};
+     Common::LRUCache<Image> image_lru_cache;
+     Common::LRUCache<Sampler> sampler_lru_cache;
+     /// A recorded image readback waiting for the GPU before its guest write.
+--- /dev/null
++++ b/src/common/unmapped_allocations.h
+@@ -0,0 +1,18 @@
++#pragma once
++#include <iterator>
++#include <map>
++#include <type_traits>
++
++namespace Common {
++// A physical allocation can back disjoint ranges. Every range must be retired.
++template <typename Ranges, typename IsUnmapped>
++auto FullyUnmappedAllocations(const Ranges& ranges, IsUnmapped&& is_unmapped) {
++    using Handle = std::remove_cvref_t<decltype((*std::begin(ranges)).memory)>;
++    std::map<Handle, bool> result;
++    for (const auto& range : ranges) {
++        auto [it, inserted] = result.try_emplace(range.memory, true);
++        it->second &= is_unmapped(range);
++    }
++    return result;
++}
++} // namespace Common

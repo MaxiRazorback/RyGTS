@@ -95,6 +95,9 @@ int KernelEqueuePrivate::GetTriggeredEvents(KernelEvent* ev, int num) {
                 e.event = e.pendingEvents.front();
                 e.pendingEvents.pop_front();
                 e.triggered = true;
+            } else if (e.triggered) {
+                // A level-triggered event stays active; like kevent, it is reported once per call.
+                break;
             }
             if (ret >= num) {
                 break;
@@ -137,6 +140,9 @@ int KernelEqueuePrivate::WaitForEvents(KernelEvent* ev, int num, uint32_t micros
                     e.event = e.pendingEvents.front();
                     e.pendingEvents.pop_front();
                     e.triggered = true;
+                } else if (e.triggered) {
+                    // A level-triggered event stays active; like kevent, it is reported once per call.
+                    break;
                 }
                 if (ret >= num) {
                     break;
@@ -151,7 +157,13 @@ int KernelEqueuePrivate::WaitForEvents(KernelEvent* ev, int num, uint32_t micros
             return SCE_KERNEL_ERROR_EBADF;
         }
         if (micros == 0) {
-            m_cond.Wait(lock);
+            // No timeout, but a timer may still be due (logiWheel's report timer waits this way).
+            uint32_t timerWait = 0;
+            if (NextTimerWaitMicros(MonotonicNs(), &timerWait)) {
+                m_cond.WaitUntil(lock, TimedWait::NowNanos() + static_cast<std::uint64_t>(timerWait) * 1000ULL);
+            } else {
+                m_cond.Wait(lock);
+            }
         } else {
             uint32_t timerWait = 0;
             const bool hasTimer = NextTimerWaitMicros(MonotonicNs(), &timerWait);
@@ -178,6 +190,10 @@ int KernelEqueuePrivate::AddEvent(const KernelEqueueEvent& event) {
     if (it != m_events.end()) {
         it->deadlineNs = event.deadlineNs;
         it->event.udata = event.event.udata;
+        if (event.event.filter == EVFILT_TIMER) {
+            it->filter.data = event.filter.data;
+            it->triggered = false;
+        }
         for (auto& pending : it->pendingEvents) {
             pending.udata = event.event.udata;
         }
@@ -411,22 +427,44 @@ int APS5_VABI sceKernelAddHRTimerEvent(KernelEqueue eq, int id, const KernelTime
     return EqueueAddEvent_nid_postfix(eq, event);
 }
 
-int APS5_VABI sceKernelDeleteHRTimerEvent(KernelEqueue eq, int id) {
-    return EqueueDeleteEvent_nid_postfix(eq, static_cast<uintptr_t>(id), EVFILT_HRTIMER);
-}
-
-int APS5_VABI sceKernelAddTimerEvent(KernelEqueue eq, int id, uint64_t usec, void* udata) {
-    (void)eq;
-    (void)id;
-    (void)usec;
-    (void)udata;
-    return 0;
+// A repeating timer: fires every usec microseconds until deleted. The period rides in
+// filter.data, and the reset after each delivery sets the next deadline.
+int APS5_VABI sceKernelAddTimerEvent(KernelEqueue eq, int id, KernelUseconds usec, void* udata) {
+    const uint64_t periodNs = std::max<uint64_t>(1, static_cast<uint64_t>(usec)) * 1000ULL;
+    const uint64_t nowNs = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()
+        ).count()
+    );
+    KernelEqueueEvent event{};
+    event.deadlineNs = nowNs + periodNs;
+    event.event.ident = static_cast<uintptr_t>(id);
+    event.event.filter = EVFILT_TIMER;
+    event.event.flags = EV_ADD;
+    event.event.data = 1;
+    event.event.udata = udata;
+    event.filter.data = reinterpret_cast<void*>(static_cast<uintptr_t>(periodNs));
+    event.filter.resetFunc = [](KernelEqueueEvent* e) {
+        const auto period = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(e->filter.data));
+        const uint64_t now = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()
+            ).count()
+        );
+        e->triggered = false;
+        e->event.data = 1;
+        e->deadlineNs += period;
+        if (e->deadlineNs <= now) e->deadlineNs = now + period;
+    };
+    return EqueueAddEvent_nid_postfix(eq, event);
 }
 
 int APS5_VABI sceKernelDeleteTimerEvent(KernelEqueue eq, int id) {
-    (void)eq;
-    (void)id;
-    return 0;
+    return EqueueDeleteEvent_nid_postfix(eq, static_cast<uintptr_t>(id), EVFILT_TIMER);
+}
+
+int APS5_VABI sceKernelDeleteHRTimerEvent(KernelEqueue eq, int id) {
+    return EqueueDeleteEvent_nid_postfix(eq, static_cast<uintptr_t>(id), EVFILT_HRTIMER);
 }
 
 int APS5_VABI sceKernelAddAmprEvent(KernelEqueue eq, int id, void* udata) {

@@ -92,7 +92,7 @@ if(RTY_HAVE_THIRD_PARTY)
     set(SDL_OPENGLES OFF CACHE BOOL "" FORCE)
     set(SDL_VULKAN ON CACHE BOOL "" FORCE)
     set(SDL_JOYSTICK ON CACHE BOOL "" FORCE)
-    set(SDL_HAPTIC OFF CACHE BOOL "" FORCE)
+    set(SDL_HAPTIC ON CACHE BOOL "" FORCE)
     set(SDL_HIDAPI ON CACHE BOOL "" FORCE)
     set(SDL_SENSOR OFF CACHE BOOL "" FORCE)
     set(SDL_STATIC_PIC ON CACHE BOOL "" FORCE)
@@ -130,6 +130,10 @@ else()
 endif()
 
 add_subdirectory(core/relinker)
+
+if(BUILD_TESTING)
+    add_subdirectory(plugins/dlss/tests)
+endif()
 
 find_package(Qt6 QUIET COMPONENTS Widgets)
 
