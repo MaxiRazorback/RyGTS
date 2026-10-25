@@ -7,6 +7,7 @@
 #include "SceTypes.hpp"
 #include "prx/libkernel/Time/include/Time.hpp"
 
+#include "prx/libkernel/File/include/HddStreaming.hpp"
 #include <atomic>
 #include <cerrno>
 #include <cstdio>
@@ -143,7 +144,16 @@ extern "C" {
 int APS5_VABI sceKernelOpen(const char* path, int flags, std::uint16_t mode) {
     APS5_LOG_TRACE("path=%s flags=0x%X nativeFlags=0x%X mode=0%o", path, flags, MapFlags(flags), mode);
     auto native = ResolvePath_nid_no_patch(path);
-    int fd = NativeOpen(native, MapFlags(flags), mode);
+    int nativeFlags = MapFlags(flags);
+#ifdef _WIN32
+    if (File::HddStreamingEnabled() && File::IsStreamingGamePath(path) &&
+        (flags & SCE_KERNEL_O_ACCMODE) == SCE_KERNEL_O_RDONLY &&
+        !(flags & (SCE_KERNEL_O_CREAT | SCE_KERNEL_O_TRUNC | SCE_KERNEL_O_APPEND |
+                   SCE_KERNEL_O_DIRECT | SCE_KERNEL_O_DIRECTORY))) {
+        nativeFlags |= _O_SEQUENTIAL;
+    }
+#endif
+    int fd = NativeOpen(native, nativeFlags, mode);
 #ifdef _WIN32
     if (fd < 0 && errno != ENOENT) {
         std::error_code error;

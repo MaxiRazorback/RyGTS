@@ -1,4 +1,4 @@
-﻿// RyGT loader: sets up Gran Turismo Sport from the player's own dump, firmware modules and fonts,
+// RyGT loader: sets up Gran Turismo Sport from the player's own dump, firmware modules and fonts,
 // then starts it. Built with build.cmd (C# for .NET Framework 4.x, which Windows includes).
 // SPDX-License-Identifier: GPL-2.0-only
 
@@ -896,10 +896,52 @@ namespace RyGT
         }
     }
 
+    // A local build record, not an authenticity signature. Written only after setup succeeds.
+    static class GameBuildIntegrity
+    {
+        public static string Hash(string exe)
+        {
+            using (var sha = System.Security.Cryptography.SHA256.Create())
+            using (var stream = File.OpenRead(exe))
+                return BitConverter.ToString(sha.ComputeHash(stream)).Replace("-", "");
+        }
+
+        public static bool Matches(string exe)
+        {
+            string stamp = exe + ".sha256";
+            if (!File.Exists(exe) || !File.Exists(stamp)) return false;
+            string recorded = File.ReadAllText(stamp).Trim();
+            return recorded.Length == 64 && recorded.All(Uri.IsHexDigit) &&
+                   String.Equals(recorded, Hash(exe), StringComparison.OrdinalIgnoreCase);
+        }
+
+        public static void RequireStopped(string exe)
+        {
+            if (!File.Exists(exe)) return;
+            try { using (File.Open(exe, FileMode.Open, FileAccess.ReadWrite, FileShare.None)) { } }
+            catch (IOException e) { throw new IOException("Close the game before rebuilding its executable.", e); }
+        }
+
+        public static void Record(string exe)
+        {
+            File.WriteAllText(exe + ".sha256", Hash(exe) + Environment.NewLine);
+        }
+
+        public static bool Ensure(string exe, Action rebuild)
+        {
+            if (Matches(exe)) return false;
+            RequireStopped(exe);
+            rebuild();
+            if (!Matches(exe)) throw new IOException("The rebuilt game did not match its recorded SHA-256; it will not be started.");
+            return true;
+        }
+    }
+
     class Settings
     {
         public string Game = "", Update = "", Modules = "", Fonts = "";
         public string StdoutLevel = "Warning";
+        public bool HddStreaming = false;
         readonly string path;
 
         public Settings(string path)
@@ -916,12 +958,13 @@ namespace RyGT
                 else if (key == "modules") Modules = value;
                 else if (key == "fonts") Fonts = value;
                 else if (key == "stdout_level") StdoutLevel = LogFiles.Levels[LogFiles.LevelIndex(value)];
+                else if (key == "hdd_streaming") HddStreaming = value == "1" || value.Equals("true", StringComparison.OrdinalIgnoreCase);
             }
         }
 
         public void Save()
         {
-            File.WriteAllLines(path, new[] { "game=" + Game, "update=" + Update, "modules=" + Modules, "fonts=" + Fonts, "stdout_level=" + StdoutLevel });
+            File.WriteAllLines(path, new[] { "game=" + Game, "update=" + Update, "modules=" + Modules, "fonts=" + Fonts, "stdout_level=" + StdoutLevel, "hdd_streaming=" + (HddStreaming ? "1" : "0") });
         }
     }
 
@@ -1360,12 +1403,25 @@ namespace RyGT
 
             var extras = Section(right, "Enhancements");
             AddOption(extras, "Disable motion blur", "GPU", "disable_motion_blur", false);
-            AddOption(extras, "PS4 Pro mode", "GPU", "ps4_pro", false);
+            AddOption(extras, "PS4 Pro Mode (BROKEN)", "GPU", "ps4_pro", false);
             AddOption(extras, "Draw the UI at screen resolution", "GPU", "ui_hires", false);
             AddOption(extras, "HDR (experimental; needs Windows HDR on)", "GPU", "hdr_allowed", false);
 
             // Shaders: the stored ones are built while the splash screen shows; a new one pauses
             // the game until it is compiled (instead of a stutter and missing objects).
+            var storage = Section(left, "Storage");
+            var hddStreaming = new DarkCheckBox { Text = "HDD streaming read-ahead (experimental)", AutoSize = true,
+                Checked = settings.HddStreaming, Margin = new Padding(0, 2, 0, 2) };
+            hddStreaming.CheckedChanged += delegate {
+                settings.HddStreaming = hddStreaming.Checked;
+                try { settings.Save(); }
+                catch (Exception e) { MessageBox.Show(this, "Could not save the setting: " + e.Message); }
+            };
+            storage.Controls.Add(hddStreaming);
+            storage.Controls.Add(new Label { Text = "For game data on a hard drive. May help sequential loads; restart required.",
+                AutoSize = true, MaximumSize = new Size(380, 0), ForeColor = Color.Silver,
+                BackColor = Color.Transparent, Margin = new Padding(0, 2, 0, 6) });
+
             var shaders = Section(left, "Shaders");
             AddOption(shaders, "Precompile shaders on the splash screen", "GPU", "precompile_shaders", true);
             // What the game does while a new shader compiles during play (GPU.compile_mode).
@@ -2244,6 +2300,7 @@ namespace RyGT
 
         void RunSetup()
         {
+            GameBuildIntegrity.RequireStopped(Exe);
             string baseDir = settings.Game, updateDir = settings.Update;
             if (!Directory.Exists(baseDir)) throw new Exception("Pick the game folder (the one holding gt00.vol and eboot.bin).");
             if (!File.Exists(Path.Combine(baseDir, "gt00.vol")))
@@ -2301,11 +2358,22 @@ namespace RyGT
             SetStatus("Converting the game for Windows (this takes a while)...");
             string converter = Path.Combine(root, "converter", "ryty.exe");
             if (!File.Exists(converter)) throw new Exception("converter\\ryty.exe is missing from the RyGT folder.");
-            Directory.CreateDirectory(Path.Combine(root, "app0", "sce_module"));
+            string staging = Path.Combine(work, "game-rebuild");
+            string stagedExe = Path.Combine(staging, "GTSport.exe");
+            string stagedModules = Path.Combine(staging, "app0", "sce_module");
+            Directory.CreateDirectory(stagedModules);
             int code = Run(converter, "--windows --ps4 --skip-syscall-check --registry --report \"" +
-                Path.Combine(work, "port-report.json") + "\" \"" + Path.Combine(work, "eboot.elf") + "\" \"" + Exe + "\"", work);
-            if (code != 0 || !File.Exists(Exe)) throw new Exception("The converter failed (exit code " + code + ").");
-            GameExe.Prepare(Exe);
+                Path.Combine(work, "port-report.json") + "\" \"" + Path.Combine(work, "eboot.elf") + "\" \"" + stagedExe + "\"", work);
+            if (code != 0 || !File.Exists(stagedExe)) throw new Exception("The converter failed (exit code " + code + ").");
+            GameExe.Prepare(stagedExe);
+            // Keep the previous executable until conversion and preparation have both succeeded.
+            Directory.CreateDirectory(Path.Combine(root, "app0", "sce_module"));
+            foreach (string module in Directory.GetFiles(stagedModules))
+                File.Copy(module, Path.Combine(root, "app0", "sce_module", Path.GetFileName(module)), true);
+            string registry = Path.Combine(staging, "GTSport.registry.json");
+            if (File.Exists(registry)) File.Copy(registry, Path.Combine(root, "GTSport.registry.json"), true);
+            if (File.Exists(Exe)) File.Replace(stagedExe, Exe, null);
+            else File.Move(stagedExe, Exe);
             Log(Wine.Detected ? "Made GTSport.exe a Windows program." : "Gave GTSport.exe the ryGT icon and made it a Windows program.");
 
             // 3. app0: the game's files, the update's over the base game's, linked rather than copied.
@@ -2335,6 +2403,8 @@ namespace RyGT
                     Log("Note: the shaders could not be prepared; they will compile while you play.");
             }
 
+            GameBuildIntegrity.Record(Exe);
+            Log("Recorded GTSport.exe SHA-256: " + GameBuildIntegrity.Hash(Exe));
             Log("Set up finished.");
         }
 
@@ -2770,10 +2840,17 @@ namespace RyGT
             string updateDir = settings.Update.Length > 0 && Directory.Exists(settings.Update) ? settings.Update : null;
             busy = true;
             RefreshState();
+            bool verified = false;
             var thread = new Thread(delegate ()
             {
                 try
                 {
+                    SetStatus("Checking the game executable...");
+                    GameBuildIntegrity.Ensure(Exe, delegate {
+                        Log("GTSport.exe has changed or has no SHA-256 build record. Rebuilding from your game files...");
+                        SetStatus("Rebuilding the game executable...");
+                        RunSetup();
+                    });
                     if (OldShaderCacheExists()) SetStatus("Moving your shaders to the shaders folder (once)...");
                     UsePortableShaderCache();
                     // Folders set up by an earlier RyGT.exe or adcpatch get the offline livery scripts
@@ -2791,13 +2868,15 @@ namespace RyGT
                         try { PrepareShaders(gameDir, updateDir); }
                         catch (Exception e) { Log("Shaders: " + e.Message); }
                     }
+                    verified = true;
                 }
                 catch (Exception e) { Log("ERROR: " + e.Message); }
                 BeginInvoke(new Action(delegate
                 {
                     busy = false;
                     RefreshState();
-                    StartGame(root);
+                    if (!verified) { status.Text = "Game verification/rebuild failed; see the log. The game was not started."; return; }
+                    StartGame(root, settings.HddStreaming);
                     status.Text = "GT Sport is starting. Logs: logs\\stdout.log and logs\\stderr.log.";
                 }));
             });
@@ -2807,7 +2886,7 @@ namespace RyGT
 
         /// Starts GTSport.exe with session log rotation and waits for GPU recovery if Vulkan loses
         /// its device.
-        static void StartGame(string root)
+        static void StartGame(string root, bool hddStreaming)
         {
             string exe = Path.Combine(root, "GTSport.exe");
             // Folders set up by an earlier RyGT.exe get the icon and the Windows subsystem now.
@@ -2834,6 +2913,7 @@ namespace RyGT
                         var start = new ProcessStartInfo(exe)
                         { WorkingDirectory = root, UseShellExecute = false };
                         start.EnvironmentVariables["RYGT_LOG_DIRECTORY"] = logDirectory;
+                        start.EnvironmentVariables["RYGT_HDD_STREAMING"] = hddStreaming ? "1" : "0";
                         started = Process.Start(start);
                     }
                     catch (Exception e)

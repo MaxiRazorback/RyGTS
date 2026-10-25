@@ -6,6 +6,10 @@
 #include "prx/libkernel/File/include/NativeStat.hpp"
 #include "prx/libkernel/Equeue/Equeue.hpp"
 #include "prx/libkernel/Time/include/Time.hpp"
+#include "prx/libkernel/File/include/HddStreaming.hpp"
+#include "prx/libkernel/File/include/File.hpp"
+#include <memory>
+#include <limits>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -23,6 +27,8 @@
 #include <vector>
 #ifdef _WIN32
 #include <windows.h>
+#include <fcntl.h>
+#include <io.h>
 #endif
 
 namespace {
@@ -33,6 +39,7 @@ constexpr int GUEST_EINVAL = 22;
 struct AprFile {
     std::filesystem::path path;
     std::uint64_t size;
+    bool gameData;
 };
 
 std::mutex g_filesLock;
@@ -108,7 +115,7 @@ bool _resolve(const char* guestPath, std::uint32_t* id, std::uint64_t* size) {
     auto found = g_idsByPath.find(key);
     if (found == g_idsByPath.end()) {
         found = g_idsByPath.emplace(key, static_cast<std::uint32_t>(g_files.size())).first;
-        g_files.push_back({std::move(hostPath), bytes});
+        g_files.push_back({std::move(hostPath), bytes, File::IsStreamingGamePath(guestPath)});
     }
     if (id) *id = found->second;
     if (size) *size = bytes;
@@ -142,6 +149,29 @@ void _readFile(const Apr::ReadFileCommand& command) {
     const auto file = _file(command.fileId);
     static const bool trace = std::getenv("APS5_TRACE_APR") != nullptr;
     if (trace) std::fprintf(stderr, "[apr] read %s offset=0x%llx size=0x%llx -> 0x%llx\n", file.path.string().c_str(), static_cast<unsigned long long>(command.offset), static_cast<unsigned long long>(command.size), static_cast<unsigned long long>(command.destination));
+#ifdef _WIN32
+    if (file.gameData && File::HddStreamingEnabled()) {
+        if (command.offset > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) ||
+            command.size > static_cast<std::uint64_t>(std::numeric_limits<std::streamsize>::max()))
+            throw std::runtime_error("APR: invalid read range");
+        const int fd = ::_wopen(file.path.c_str(), _O_RDONLY | _O_BINARY | _O_SEQUENTIAL);
+        if (fd < 0) throw std::runtime_error("APR: cannot open " + file.path.string());
+        std::FILE* raw = ::_fdopen(fd, "rb");
+        if (!raw) { ::_close(fd); throw std::runtime_error("APR: cannot create file stream"); }
+        const std::unique_ptr<std::FILE, decltype(&std::fclose)> stream(raw, &std::fclose);
+        if (::_fseeki64(raw, static_cast<std::int64_t>(command.offset), SEEK_SET) != 0)
+            throw std::runtime_error("APR: seek failed for " + file.path.string());
+        const auto read = ReadIntoGuest(reinterpret_cast<void*>(command.destination), static_cast<std::size_t>(command.size),
+            [&](void* target) -> std::int64_t {
+                std::clearerr(raw);
+                if (::_fseeki64(raw, static_cast<std::int64_t>(command.offset), SEEK_SET) != 0) return -1;
+                const auto got = std::fread(target, 1, static_cast<std::size_t>(command.size), raw);
+                return std::ferror(raw) ? -1 : static_cast<std::int64_t>(got);
+            });
+        if (read < 0) throw std::runtime_error("APR: read failed for " + file.path.string());
+        return;
+    }
+#endif
     std::ifstream stream(file.path, std::ios::binary);
     if (!stream) throw std::runtime_error("APR: cannot open " + file.path.string());
     stream.seekg(static_cast<std::streamoff>(command.offset));
