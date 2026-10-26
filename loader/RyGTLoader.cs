@@ -1,4 +1,4 @@
-// RyGT loader: sets up Gran Turismo Sport from the player's own dump, firmware modules and fonts,
+﻿// RyGT loader: sets up Gran Turismo Sport from the player's own dump, firmware modules and fonts,
 // then starts it. Built with build.cmd (C# for .NET Framework 4.x, which Windows includes).
 // SPDX-License-Identifier: GPL-2.0-only
 
@@ -2396,6 +2396,7 @@ namespace RyGT
             // 6. Shaders other players have met, prepared from this game's own files, into the
             // shader folder every RyGT folder shares.
             UsePortableShaderCache();
+            EnsureShaderCacheIdentity();
             if (File.Exists(ShaderPack))
             {
                 SetStatus("Preparing shaders from your game files (a few minutes)...");
@@ -2488,6 +2489,13 @@ namespace RyGT
         // pause the game the first time a car or track shows up.
         string ShaderPack { get { return Path.Combine(root, "tools", "adcpatch", "shaders.pack"); } }
         string ShaderPackStamp { get { return Path.Combine(ShaderFolder, "shaders-pack.txt"); } }
+
+        void EnsureShaderCacheIdentity()
+        {
+            if (Process.GetProcessesByName("GTSport").Length != 0)
+                throw new IOException("Close the game before checking or updating its shader cache.");
+            ShaderCacheIdentity.Ensure(ShaderFolder, Exe, Path.Combine(root, "libs", "libSceVideoOut.prx"), Log);
+        }
 
         bool ShadersOutdated()
         {
@@ -2853,6 +2861,7 @@ namespace RyGT
                     });
                     if (OldShaderCacheExists()) SetStatus("Moving your shaders to the shaders folder (once)...");
                     UsePortableShaderCache();
+                    EnsureShaderCacheIdentity();
                     // Folders set up by an earlier RyGT.exe or adcpatch get the offline livery scripts
                     // (again) now (a few seconds).
                     if (GameScriptsOutdated() && Directory.Exists(gameDir))
