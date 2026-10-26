@@ -1161,6 +1161,7 @@ namespace RyGT
             // Graphics.
             var graphics = Section(right, "Graphics");
             AddRendererSetting(graphics);
+            AddExperimentalRenderScale(graphics);
             // Sparks, tire smoke and other effects are always on; an older launcher could have
             // turned them off in the config.
             if (!ReadSetting("GPU", "particle_effects", true))
@@ -2107,6 +2108,73 @@ namespace RyGT
             panel.Controls.Add(row);
         }
 
+        void AddExperimentalRenderScale(TableLayoutPanel panel)
+        {
+            var enabled = AddOption(panel, "Scene render scale (EXPERIMENTAL)",
+                "GPU", "experimental_render_scale", false);
+            var preset = new DarkComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 300 };
+            var values = new[] { "ultra_performance", "performance", "balanced", "quality", "dlaa" };
+            preset.Items.AddRange(new object[] { "33.3% - Ultra Performance", "50% - Performance", "58.8% - Balanced", "66.7% - Quality", "100% - Native" });
+            preset.SelectedIndex = Math.Max(0, Array.IndexOf(values,
+                ReadStringSetting("GPU", "experimental_render_preset", "performance")));
+            preset.Enabled = enabled.Checked;
+            preset.SelectedIndexChanged += delegate {
+                try { WriteSetting("GPU", "experimental_render_preset", values[preset.SelectedIndex]); }
+                catch (Exception e) { MessageBox.Show(this, "Could not save the setting: " + e.Message); }
+            };
+            enabled.CheckedChanged += delegate { preset.Enabled = enabled.Checked; };
+            panel.Controls.Add(preset);
+            var preview = new Label { AutoSize = true, ForeColor = Dark.DimText,
+                Margin = new Padding(22, 2, 0, 4) };
+            Action refreshPreview = delegate {
+                try {
+                    var output = RenderScaleOutputSize();
+                    var scene = RenderResolution.Calculate(output.Width, output.Height, values[preset.SelectedIndex]);
+                    preview.Text = "Scene: " + scene.Width + "x" + scene.Height + " -> output " +
+                        output.Width + "x" + output.Height + ". Restart required.\n" +
+                        "Works with or without an upscaler. Native renderer; restart required.\nExperimental; post-processing may differ. Off by default.";
+                } catch (Exception e) { preview.Text = e.Message; }
+            };
+            preset.SelectedIndexChanged += delegate { refreshPreview(); };
+            enabled.CheckedChanged += delegate { refreshPreview(); };
+            refreshPreview();
+            panel.Controls.Add(preview);
+        }
+
+        Size RenderScaleOutputSize()
+        {
+            int width = ReadIntSetting("GPU", "window_width", 1280);
+            int height = ReadIntSetting("GPU", "window_height", 720);
+            if (ReadSetting("GPU", "full_screen", false) &&
+                ReadStringSetting("GPU", "full_screen_mode", "Borderless") != "Fullscreen")
+            {
+                var screen = Screen.FromControl(this).Bounds;
+                width = screen.Width; height = screen.Height;
+            }
+            return new Size(width, height);
+        }
+
+        Size? experimentalSceneSize;
+
+        void ApplyExperimentalRenderScale()
+        {
+            experimentalSceneSize = null;
+            if (!ReadSetting("GPU", "experimental_render_scale", false)) return;
+            if (!ReadSetting("GPU", "native_renderer", true))
+                throw new InvalidOperationException("Experimental scene resolution requires the Native renderer.");
+            if (ReadSetting("GPU", "ps4_pro", false))
+                throw new InvalidOperationException("Turn off PS4 Pro mode before using experimental scene resolution.");
+            bool dlss = ReadSetting("GPU", "dlss_enabled", false);
+            var outputSize = RenderScaleOutputSize();
+            string preset = ReadStringSetting("GPU", "experimental_render_preset", "performance");
+            var size = RenderResolution.Calculate(outputSize.Width, outputSize.Height, preset);
+            experimentalSceneSize = size;
+            WriteSetting("GPU", "experimental_render_width", size.Width);
+            WriteSetting("GPU", "experimental_render_height", size.Height);
+            if (dlss) WriteSetting("GPU", "dlss_quality", preset);
+            else if (ReadSetting("GPU", "fsr_enabled", false)) WriteSetting("GPU", "upscale_ratio", "0");
+        }
+
         void AddDlssSharpening(TableLayoutPanel panel, CheckBox dlss)
         {
             var row = new TableLayoutPanel
@@ -2831,7 +2899,7 @@ namespace RyGT
         void Play()
         {
             if (!File.Exists(Exe)) { MessageBox.Show(this, "Press Set up first."); return; }
-            try { ResolveVulkanDevice(); }
+            try { ApplyExperimentalRenderScale(); ResolveVulkanDevice(); }
             catch (Exception e) { MessageBox.Show(this, e.Message); return; }
             // Without its data index GT Sport closes right after the splash screen.
             string dataProblem = ReadProblem(Path.Combine(root, "app0", "gt.idx"), -1);
@@ -2885,7 +2953,7 @@ namespace RyGT
                     busy = false;
                     RefreshState();
                     if (!verified) { status.Text = "Game verification/rebuild failed; see the log. The game was not started."; return; }
-                    StartGame(root, settings.HddStreaming);
+                    StartGame(root, settings.HddStreaming, experimentalSceneSize);
                     status.Text = "GT Sport is starting. Logs: logs\\stdout.log and logs\\stderr.log.";
                 }));
             });
@@ -2895,7 +2963,7 @@ namespace RyGT
 
         /// Starts GTSport.exe with session log rotation and waits for GPU recovery if Vulkan loses
         /// its device.
-        static void StartGame(string root, bool hddStreaming)
+        static void StartGame(string root, bool hddStreaming, Size? sceneSize)
         {
             string exe = Path.Combine(root, "GTSport.exe");
             // Folders set up by an earlier RyGT.exe get the icon and the Windows subsystem now.
@@ -2921,6 +2989,7 @@ namespace RyGT
                     {
                         var start = new ProcessStartInfo(exe)
                         { WorkingDirectory = root, UseShellExecute = false };
+                        RenderResolution.ConfigureStart(start, root, sceneSize);
                         start.EnvironmentVariables["RYGT_LOG_DIRECTORY"] = logDirectory;
                         start.EnvironmentVariables["RYGT_HDD_STREAMING"] = hddStreaming ? "1" : "0";
                         started = Process.Start(start);
