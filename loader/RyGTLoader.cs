@@ -3076,6 +3076,32 @@ namespace RyGT
         [STAThread]
         static int Main(string[] args)
         {
+            // Read-only snapshots and the executable preparation helper do not open the launcher.
+            bool helper = args.Length > 0 &&
+                (args[0].StartsWith("--snapshot", StringComparison.Ordinal) || args[0] == "--prepare");
+            if (helper) return RunLauncher(args);
+
+            // Hold the lock for the entire UI/setup lifetime. WaitOne is atomic across launches;
+            // an abandoned lock from a crashed launcher can safely be acquired again.
+            using (var instance = new Mutex(false, @"Local\RyGT.Launcher.SingleInstance"))
+            {
+                bool owns;
+                try { owns = instance.WaitOne(0, false); }
+                catch (AbandonedMutexException) { owns = true; }
+                if (!owns)
+                {
+                    MessageBox.Show("RyGT Launcher is already running.\n\n" +
+                        "Please close the existing launcher, then open RyGT Launcher again.",
+                        "RyGT Launcher", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return 2;
+                }
+                try { return RunLauncher(args); }
+                finally { instance.ReleaseMutex(); }
+            }
+        }
+
+        static int RunLauncher(string[] args)
+        {
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             // Portable: the tools' work folders (and anything else asking for a temporary folder) go
