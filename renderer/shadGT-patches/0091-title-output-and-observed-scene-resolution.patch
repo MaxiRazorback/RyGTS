@@ -8,7 +8,7 @@
  #include "common/alignment.h"
  #include "common/assert.h"
  #include "common/logging/log.h"
-@@ -182,6 +183,19 @@
+@@ -84,6 +85,19 @@
      }();
      if (scene_width < 320 || scene_width > 3840 || scene_height < 180 || scene_height > 2160 ||
          (scene_width == 1920 && scene_height == 1080)) return true;
@@ -28,7 +28,7 @@
      if (!enabled || stage.pgm_hash != 0xb33ec4df || resource.is_written || resource.is_depth ||
          sharp.GetType() != AmdGpu::ImageType::Color2D || sharp.width != 1919 ||
          sharp.height != 1079 || sharp.NumLevels() != 1 ||
-@@ -200,6 +214,7 @@
+@@ -102,6 +116,7 @@
      if (!target) return false;
      sharp.width = target->info.size.width - 1;
      sharp.height = target->info.size.height - 1;

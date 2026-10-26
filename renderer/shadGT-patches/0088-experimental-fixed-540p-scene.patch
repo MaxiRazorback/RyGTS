@@ -1,9 +1,9 @@
 --- a/src/video_core/renderer_vulkan/vk_rasterizer_native.cpp
 +++ b/src/video_core/renderer_vulkan/vk_rasterizer_native.cpp
-@@ -160,6 +160,44 @@
- 
- 
- 
+@@ -62,6 +62,44 @@
+ bool RytyGtsInRace();
+ bool RytyGtsMenuSnapshotsAllowed();
+ namespace {
 +
 +// The experimental 540p scene leaves GT Sport's final composition T# at output size.
 +// Resolve that one sampled view against a matching, already-rendered physical target.
@@ -45,7 +45,7 @@
  
  /// Logs the first few times and then every 1000th.
  bool Sample(std::atomic<u32>& counter) {
-@@ -2672,7 +2710,8 @@
+@@ -2489,7 +2527,8 @@
  void NativeRenderer::BindTextures(const Shader::Info& stage, const AmdGpu::Regs& regs,
                                    Shader::Backend::Bindings& binding, DrawBindings& b) {
      for (const auto& image_desc : stage.images) {
@@ -55,7 +55,7 @@
          const bool cube_sampling = image_desc.post_op == Shader::SharpFetchPostOp::NativeCubeSampling;
          const u32 num_bindings = image_desc.NumBindings(stage);
          const u32 first = static_cast<u32>(b.images.size());
-@@ -4425,7 +4464,10 @@
+@@ -4133,7 +4172,10 @@
      const u64 now_frame = shared_frame.load(std::memory_order_relaxed);
      static thread_local std::array<TextureMemo, 4096> memos{};
      for (const auto& image_desc : stage.images) {
@@ -69,8 +69,8 @@
          const u32 first = static_cast<u32>(b.images.size());
 --- a/ryty_gpu/ryty_game_patch.cpp
 +++ b/ryty_gpu/ryty_game_patch.cpp
-@@ -1270,7 +1270,45 @@
-     Apply(base, Patch{0xf387b2, {0x20, 0xd1}, {0xb1, 0x01}, "GTS-009 4K UI images (2/2)"});
+@@ -1352,7 +1352,45 @@
+     g_snapshot_session_ready = g_snapshot_start && g_snapshot_end;
  }
  
 +// Diagnostic comparison: keep output/UI at 1080p while the allocator experiment
@@ -112,6 +112,6 @@
 +
  void RytyApplyGamePatches() {
 +    InstallExperimentalSceneViewport(reinterpret_cast<u8*>(GetModuleHandleA(nullptr)));
+     InstallMenuSnapshotSessionGuard(reinterpret_cast<u8*>(GetModuleHandleA(nullptr)));
+     InstallIdleKeyboardClose(reinterpret_cast<u8*>(GetModuleHandleA(nullptr)));
      InstallWideCamera(reinterpret_cast<u8*>(GetModuleHandleA(nullptr)));
-     InstallTriggerTelemetry(reinterpret_cast<u8*>(GetModuleHandleA(nullptr)));
-     InstallUi4kImages(reinterpret_cast<u8*>(GetModuleHandleA(nullptr)));

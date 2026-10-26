@@ -1,6 +1,6 @@
 --- a/src/video_core/renderer_vulkan/vk_rasterizer_native.cpp
 +++ b/src/video_core/renderer_vulkan/vk_rasterizer_native.cpp
-@@ -3698,6 +3698,39 @@
+@@ -3508,6 +3508,39 @@
          ResolveTargets(regs, *pipeline, targets);
      }
  
@@ -40,7 +40,7 @@
      if (r.FrameDumpActive() || Rasterizer::ExposureLogOn()) {
          r.FrameDumpPass(regs, targets.state, pipeline); // NAT-117
      }
-@@ -3880,6 +3913,23 @@
+@@ -3690,6 +3723,23 @@
          r.UpdatePrimitiveState(is_indexed, quad_triangles);
          r.UpdateRasterizationState();
          r.UpdateColorBlendingState(pipeline);
@@ -64,7 +64,7 @@
          s.dynamic.Commit(r.instance, CmdBuf{s.cmd});
          Rasterizer::t_dynamic_state = saved;
      }
-@@ -3930,6 +3980,49 @@
+@@ -3738,6 +3788,49 @@
          feedback_layout(vk::ImageLayout::eAttachmentFeedbackLoopOptimalEXT,
                          vk::ImageLayout::eGeneral);
          s.buffers_written = true;

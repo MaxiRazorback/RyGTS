@@ -1,6 +1,6 @@
 --- a/src/video_core/renderer_vulkan/vk_rasterizer_native.cpp
 +++ b/src/video_core/renderer_vulkan/vk_rasterizer_native.cpp
-@@ -172,9 +172,19 @@
+@@ -74,9 +74,19 @@
          const char* env = std::getenv("RYGT_EXPERIMENTAL_SCENE_VIEWPORT");
          return env && std::strcmp(env, "1") == 0;
      }();
@@ -21,7 +21,7 @@
          sharp.NumLayers() != 1 || sharp.base_level != 0) {
          return true;
      }
-@@ -183,8 +193,8 @@
+@@ -85,8 +95,8 @@
      const auto* target = registry.FindExisting(sharp.Address(), [&](const Native::ImageEntry& entry) {
          const auto& info = entry.info;
          return !entry.from_cpu && !info.props.is_depth && info.pixel_format == format &&
@@ -32,7 +32,7 @@
                 info.resources.levels == 1 && info.resources.layers == 1;
      }, true);
      if (!target) return false;
-@@ -193,8 +203,8 @@
+@@ -95,8 +105,8 @@
      static std::atomic<u32> logged{};
      if (logged.fetch_add(1, std::memory_order_relaxed) < 8) {
          LOG_WARNING(Render_Vulkan,
@@ -45,7 +45,7 @@
  }
 --- a/ryty_gpu/ryty_game_patch.cpp
 +++ b/ryty_gpu/ryty_game_patch.cpp
-@@ -1347,6 +1347,14 @@
+@@ -1362,6 +1362,14 @@
      u64 self, u64 output, u64 auxiliary, u64 scene, u64 depth, u64 motion,
      float x, float y, float width, float height, float scene_x, float scene_y,
      u64 extra_a, u64 extra_b) {
@@ -60,7 +60,7 @@
      u32 output_extent{}, scene_extent{};
      // These are verified color-target hint fields, not guessed ImageInfo offsets.
      if (output && scene && scene_x == 1.0f && scene_y == 1.0f &&
-@@ -1354,11 +1362,14 @@
+@@ -1369,11 +1377,14 @@
              reinterpret_cast<const void*>(output + 0x44), sizeof(output_extent)) &&
          Core::RytyMemory::GuardedCopy(&scene_extent,
              reinterpret_cast<const void*>(scene + 0x44), sizeof(scene_extent)) &&

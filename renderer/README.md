@@ -490,3 +490,7 @@ Validation: the complete 0073-0083 series applies in filename order to the recon
 Patch 0084 owns bounded fetch-program snapshots before asynchronous translation is queued. Compiler workers read those snapshots instead of guest pointers that can become unmapped; synchronous fetch parsing uses guarded reads. Failed snapshots leave translation to the existing draw-time path. Pipeline ordering, required shadow waits, formats and resolution are unchanged.
 
 Validation: Release build, snapshot lifetime tests, 2,893 import bindings and the standalone image self-test passed. The AMD candidate completed two track/menu cycles without a crash. Existing rendering defects were unchanged; this is a crash-lifetime correction, not a rendering-correctness claim.
+
+## Resolution patch context repair
+
+Patches 0088?0091 are rebased onto the documented published baseline, removing context dependencies on local GPU diagnostics. Their functional changes are unchanged. The reconstructed 0073?0097 sequence was checked, with LF source normalization and strict application of the rebased/new patches.
