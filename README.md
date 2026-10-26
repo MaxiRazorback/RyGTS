@@ -29,7 +29,9 @@ everything GT Sport needs added on top.
 | Race summary and results | Working |
 | Audio | Working |
 | Controllers | Working through SDL |
-| Online features | Not supported |
+| Steering Wheels | In Development |
+| Online features | In Development |
+| VR features | In Development |
 
 Known issues:
 - The first 30 seconds of a race can stutter while graphics pipelines compile.
@@ -37,7 +39,10 @@ Known issues:
   are skipped.
 
 Tested on Windows 11 with an Intel i7-13700KF and an RTX 4070Ti.
+
 Tested on Windows 11 with an AMD Ryzen 5 9600X and an RTX 3060 12GB
+
+Tested on Windows 10 LTSC with an AMD Ryzen 7 7745HX and an RTX 4070 8GB
 
 ## Download
 
