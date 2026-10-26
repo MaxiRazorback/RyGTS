@@ -502,3 +502,5 @@ Patch 0093: [provide frame generation with owned scene inputs](FRAMEGEN-SCENE-IN
 Patch 0094: [report active upscaler and working frame generation](UPSCALER-TITLE.md).
 
 Patch 0095: [supply Native frame generation with a HUD-less reference](FRAMEGEN-HUD.md).
+
+Patch 0096: [add bounded frame-generation GPU and host timing](FRAMEGEN-TIMING.md).
