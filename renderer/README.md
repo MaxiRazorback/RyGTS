@@ -500,3 +500,5 @@ Patch 0092: [connect Native FSR reconstruction and depth aliases](NATIVE-FSR.md)
 Patch 0093: [provide frame generation with owned scene inputs](FRAMEGEN-SCENE-INPUTS.md).
 
 Patch 0094: [report active upscaler and working frame generation](UPSCALER-TITLE.md).
+
+Patch 0095: [supply Native frame generation with a HUD-less reference](FRAMEGEN-HUD.md).
