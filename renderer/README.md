@@ -504,3 +504,5 @@ Patch 0094: [report active upscaler and working frame generation](UPSCALER-TITLE
 Patch 0095: [supply Native frame generation with a HUD-less reference](FRAMEGEN-HUD.md).
 
 Patch 0096: [add bounded frame-generation GPU and host timing](FRAMEGEN-TIMING.md).
+
+Patch 0097: [guard low-FPS frame-generation pacing history](FRAMEGEN-LOW-FPS-PACING.md).
