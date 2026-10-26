@@ -494,3 +494,5 @@ Validation: Release build, snapshot lifetime tests, 2,893 import bindings and th
 ## Resolution patch context repair
 
 Patches 0088?0091 are rebased onto the documented published baseline, removing context dependencies on local GPU diagnostics. Their functional changes are unchanged. The reconstructed 0073?0097 sequence was checked, with LF source normalization and strict application of the rebased/new patches.
+
+Patch 0092: [connect Native FSR reconstruction and depth aliases](NATIVE-FSR.md).
