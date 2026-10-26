@@ -484,3 +484,9 @@ The AMD RX 9000/RX 7000 profile and shader-store patches are combined with the e
 Event-start/replay patch contexts were rebased without changing their behavior. Worker scheduling retains the existing topology/memory limits and low priority for compiler workers; this supersedes PERF-310's older dynamic menu/race priority switching. Retiling-buffer reuse, background draw preparation, AMD-family store versions and profile switches are retained.
 
 Validation: the complete 0073-0083 series applies in filename order to the reconstructed baseline through 0072. The updated camera patch applies to its documented 1d13c88d base. Seven affected renderer translation units pass syntax checks and all five compiler queue/budget/lifetime tests pass. AMD hardware rendering still requires validation.
+
+## Queued fetch-shader input lifetime
+
+Patch 0084 owns bounded fetch-program snapshots before asynchronous translation is queued. Compiler workers read those snapshots instead of guest pointers that can become unmapped; synchronous fetch parsing uses guarded reads. Failed snapshots leave translation to the existing draw-time path. Pipeline ordering, required shadow waits, formats and resolution are unchanged.
+
+Validation: Release build, snapshot lifetime tests, 2,893 import bindings and the standalone image self-test passed. The AMD candidate completed two track/menu cycles without a crash. Existing rendering defects were unchanged; this is a crash-lifetime correction, not a rendering-correctness claim.
