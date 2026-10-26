@@ -22,6 +22,7 @@ everything GT Sport needs added on top.
 
 ## Status
 
+Status
 | Area | State |
 | --- | --- |
 | Boot, menus, car and track selection | Working |
@@ -29,6 +30,7 @@ everything GT Sport needs added on top.
 | Race summary and results | Working |
 | Audio | Working |
 | Controllers | Working through SDL |
+| Steering Wheels | In Development |
 | Online features | In Development |
 | VR features | In Development |
 
