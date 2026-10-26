@@ -498,3 +498,5 @@ Patches 0088?0091 are rebased onto the documented published baseline, removing c
 Patch 0092: [connect Native FSR reconstruction and depth aliases](NATIVE-FSR.md).
 
 Patch 0093: [provide frame generation with owned scene inputs](FRAMEGEN-SCENE-INPUTS.md).
+
+Patch 0094: [report active upscaler and working frame generation](UPSCALER-TITLE.md).
