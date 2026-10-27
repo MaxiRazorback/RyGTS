@@ -192,7 +192,7 @@ More details: [docs/user/BUILDING.md](docs/user/BUILDING.md).
 - 'shader_fixes': Fixing shader bugs.'
 
 # Discord Server
-Join our server for more updates: https://discord.gg/8dz4U9Nd8d
+Join our server for more updates: https://discord.gg/wXs3YQujSt
 
 ## Documentation
 
