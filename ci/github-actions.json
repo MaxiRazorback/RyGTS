@@ -1,6 +1,0 @@
-{
-  "repository": "xacidr4inx/RyGT-ci",
-  "workflow": "windows-build.yml",
-  "ref": "main",
-  "workflow_commit": "f2da954fb9659a93d7d13dafe9e4696d6496a9be"
-}
