@@ -1,60 +1,70 @@
 # GitLab CI
 
-`.gitlab-ci.yml` runs three independent jobs on branch pushes, merge requests,
-and tags. Branch pipelines are suppressed when an equivalent merge-request
-pipeline exists. CI creates downloadable build artifacts; it does not publish
-releases or change installed game files.
+`.gitlab-ci.yml` builds on GitLab-hosted machines. No runner, service or build
+process on a developer PC is required. Branch pushes, merge requests and tags
+run CI; duplicate push/MR pipelines are suppressed.
 
-* `launcher`: builds `loader/build.cmd` with the .NET Framework compiler.
-* `renderer`: builds the native `ryty_gpu` target as `libSceVideoOut.prx`,
-  with symbols, source provenance and SHA-256 checksums.
-* `converter-and-tests`: builds the Linux CLI preset on Ubuntu 24.04 and runs
-  CTest, publishing a JUnit report. This job does not build the game runtime.
+* `launcher`: Windows .NET Framework build of `loader/build.cmd`.
+* `renderer`: native Windows `ryty_gpu` build producing `libSceVideoOut.prx`,
+  PDB symbols, source provenance and SHA-256 checksums.
+* `converter-and-tests`: Ubuntu 24.04 Linux CLI build and CTest with JUnit output.
+* `package`: waits for all three jobs to succeed, downloads their required
+  artifacts, and assembles one verified Windows distribution ZIP plus its hash.
 
-## Windows runner setup
+The Windows jobs select GitLab's `saas-windows-medium-amd64` hosted runner.
+The renderer setup script installs LLVM 23.1.3 from the official archive,
+checks its pinned SHA-256, and installs CMake 3.31.6 and Ninja 1.11.1.4.
+The MSVC developer environment comes from the hosted image's Visual Studio
+C++ tools. The renderer uses two compiler workers and has a three-hour job
+limit. Hosted Windows provisioning can take several minutes. Availability,
+compute quota and the project's maximum job timeout still apply.
 
-Register a Windows **shell/PowerShell** GitLab runner tagged `rygt-windows`.
-Use a short runner `builds_dir`, such as `C:\b`; nested dependency Git paths
-can exceed Git for Windows limits under long user-profile checkout paths.
-The two Windows jobs remain pending until a runner with that tag is available.
-Use an isolated runner for trusted project code; do not expose a privileged
-shell runner to untrusted fork merge requests or store signing credentials on it.
+## Complete distribution package
 
-Install Visual Studio C++ x64 build tools and Windows SDK, .NET Framework 4.x,
-Python 3, Git, CMake 3.30+ and Ninja. Install the full official LLVM 23.1.3
-Windows x64 archive, including compiler-rt, and set `LLVM_ROOT` to its root.
-The script loads the x64 MSVC developer environment when needed (INCLUDE, LIB,
-and PATH); `clang-cl`, `lld-link`, `cmake`, `ninja`, `python`, and `git` must work
-in a runner job. Use a fresh checkout per job: `.ci-renderer` is intentionally
-not reused. Renderer compilation is limited to two workers; allow at least
-16 GB RAM and sufficient disk space for its dependencies and build tree.
+Download `dist/RyGT-development-<commit>.zip` from the `package` job's artifacts.
+It contains the fresh CI launcher and renderer, the converter and other required
+redistributable runtime files, default configuration, documentation and licenses.
+Symbols stay in the renderer job artifact and are excluded from the release ZIP.
 
-Linux jobs require a Docker runner that accepts untagged jobs and can pull
-`ubuntu:24.04`. Windows jobs do not use Docker images.
+The remaining Windows runtime/helper files, including `converter/ryty.exe` and
+`adcpatch.exe`, come from the immutable October 25 published prerelease archive,
+pinned by full SHA-256 in `ci/package.py`. The Linux converter test binary is not
+substituted for a Windows executable. This pipeline does **not** rebuild every
+runtime library or Windows helper. BUILD_INFO.txt records that distinction,
+the exact source revision, renderer patch list and runtime archive identity.
+Updating those retained files requires a reviewed change to the pinned runtime.
 
-## Reproducing the renderer
+Package assembly verifies both build artifact checksums and source revisions,
+rejects unsafe ZIP paths and unwanted game/user data, checks required runtime
+files, regenerates the complete checksum manifest, then reads back and verifies
+every packaged file. No game executable/data, firmware, saves, logs, shader
+caches or NVIDIA SDK files are included. Players supply their own game and
+required firmware modules through normal setup.
 
-`ci/prepare-renderer.py <new-directory>` checks out the exact public ShadGT
-base `1d13c88d2e57bc63ce1586fe0b8f3342b6afdd19`, applies the camera patch first,
+The package is a development artifact; CI does not create a release or publish
+a tag automatically. Package artifacts expire after 30 days; individual build
+artifacts expire after 14 days. Checksums are not publisher signatures.
+
+## Renderer source
+
+`ci/prepare-renderer.py <new-directory>` checks out ShadGT commit
+`1d13c88d2e57bc63ce1586fe0b8f3342b6afdd19`, applies the camera patch first,
 then the DLSS patch and patches 0062 through 0097 in filename order, and
-initializes pinned submodules. Every patch failure stops the job.
+initializes pinned submodules. Patch failures stop the job. Git long-path
+support is enabled for Windows dependency checkout.
 
 The camera and temporal-upscaler patches overlap in `ryty_entry.cpp`.
 `ci/renderer-0064-camera-entry.patch` carries only that file's original 0064
 changes with camera-aware context; the rest of 0064 applies unchanged.
 Update the explicit patch range when publishing subsequent renderer patches.
-No local experimental shader overrides, game executable, firmware, captures,
-or shader caches are included. CI-SOURCE.txt records the renderer base and patch
-names; RYGT-COMMIT.txt identifies the repository revision containing those patches.
+No local experimental shader overrides are incorporated.
 
-To build locally from an x64 developer PowerShell:
+To build manually from a Windows x64 developer PowerShell, install the same
+LLVM distribution and set LLVM_ROOT to it, then run:
 
 ```powershell
-$env:LLVM_ROOT = 'C:\toolchains\clang+llvm-23.1.3-x86_64-pc-windows-msvc'
 powershell -NoProfile -ExecutionPolicy Bypass -File ci/build-windows.ps1 -Target Launcher
 powershell -NoProfile -ExecutionPolicy Bypass -File ci/build-windows.ps1 -Target Renderer
 ```
 
-Artifacts expire after 14 days. Checksums detect changes but are not signatures
-or proof of publisher identity. A successful compile/test pipeline does not
-replace live GPU and game validation.
+Successful CI compilation and packaging do not replace live game/GPU validation.

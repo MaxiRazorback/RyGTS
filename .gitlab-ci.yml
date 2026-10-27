@@ -6,13 +6,13 @@ workflow:
       when: never
     - if: '$CI_COMMIT_BRANCH'
 
-stages: [build]
+stages: [build, package]
 variables:
   GIT_SUBMODULE_STRATEGY: none
 
 launcher:
   stage: build
-  tags: [rygt-windows]
+  tags: [saas-windows-medium-amd64]
   script:
     - powershell -NoProfile -ExecutionPolicy Bypass -File ci/build-windows.ps1 -Target Launcher
   artifacts:
@@ -22,8 +22,10 @@ launcher:
 
 renderer:
   stage: build
-  tags: [rygt-windows]
+  tags: [saas-windows-medium-amd64]
   timeout: 3h
+  before_script:
+    - . ./ci/setup-hosted-windows.ps1
   script:
     - powershell -NoProfile -ExecutionPolicy Bypass -File ci/build-windows.ps1 -Target Renderer
   artifacts:
@@ -46,3 +48,22 @@ converter-and-tests:
     reports:
       junit: converter-tests.xml
     expire_in: 14 days
+
+package:
+  stage: package
+  image: python:3.12-slim
+  needs:
+    - job: launcher
+      artifacts: true
+    - job: renderer
+      artifacts: true
+    - job: converter-and-tests
+      artifacts: false
+  script:
+    - python ci/package.py
+  artifacts:
+    name: 'RyGT-development-$CI_COMMIT_SHORT_SHA'
+    paths:
+      - dist/*.zip
+      - dist/*.zip.sha256
+    expire_in: 30 days
