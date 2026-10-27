@@ -25,7 +25,7 @@ def prepare(destination):
     camera = patches / "0065-in-game-camera-manager.patch"
     ordered = [camera, patches / "0020-fix-dlss-temporal-scene-reconstruction.patch"]
     ordered += sorted(p for p in patches.glob("*.patch")
-                      if p != camera and 62 <= int(p.name[:4]) <= 97)
+                      if p != camera and 62 <= int(p.name[:4]) <= 99)
     applied = []
     for patch in ordered:
         command = ["git", "-C", str(destination), "apply", "--whitespace=nowarn"]

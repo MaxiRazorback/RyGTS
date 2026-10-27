@@ -506,3 +506,7 @@ Patch 0095: [supply Native frame generation with a HUD-less reference](FRAMEGEN-
 Patch 0096: [add bounded frame-generation GPU and host timing](FRAMEGEN-TIMING.md).
 
 Patch 0097: [guard low-FPS frame-generation pacing history](FRAMEGEN-LOW-FPS-PACING.md).
+
+Patch 0098: [automatic compressed-texture compatibility](AMD-COMPATIBILITY.md).
+
+Patch 0099: select the validated buffer optimizations automatically on AMD; see [compatibility policy](AMD-COMPATIBILITY.md).
