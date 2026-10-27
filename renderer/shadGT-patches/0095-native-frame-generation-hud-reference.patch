@@ -232,3 +232,16 @@
  #endif
  
      if (frame->width != expected_frame_width || frame->height != expected_frame_height ||
+diff --git a/src/video_core/renderer_vulkan/vk_presenter.h b/src/video_core/renderer_vulkan/vk_presenter.h
+--- a/src/video_core/renderer_vulkan/vk_presenter.h
++++ b/src/video_core/renderer_vulkan/vk_presenter.h
+@@ -122,6 +122,9 @@
+ 
+ private:
+     Frame* GetRenderFrame();
++#ifdef RYTY_GPU
++    void PrepareHudlessReference(Frame& frame, vk::CommandBuffer cmd, vk::Format input_format);
++#endif
+ 
+     void RecreateFrame(Frame* frame, u32 width, u32 height);
+ 
