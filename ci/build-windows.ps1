@@ -32,7 +32,8 @@ if ($Target -eq 'Launcher') {
         $env:PATH = "$llvm/bin;$env:PATH"
         $env:LIB = "$($builtins.DirectoryName);$env:LIB"
     }
-    Invoke-Checked 'cmake' @('-S',$source,'-B',"$source/Build/ci",'-G','Ninja','-DCMAKE_BUILD_TYPE=Release','-DCMAKE_C_COMPILER=clang-cl','-DCMAKE_CXX_COMPILER=clang-cl','-DCMAKE_LINKER=lld-link','-DHAVE_ENDIAN_H=OFF','-DSHADGT_RYTY_GPU=ON')
+    Invoke-Checked 'cmake' @('-S',$source,'-B',"$source/Build/ci",'-G','Ninja','-DCMAKE_BUILD_TYPE=Release','-DCMAKE_C_COMPILER=clang-cl','-DCMAKE_CXX_COMPILER=clang-cl','-DCMAKE_LINKER=lld-link','-DHAVE_ENDIAN_H=OFF','-DSHADGT_RYTY_GPU=ON','-DENABLE_DISCORD_RPC=ON')
+    if (!(Select-String -LiteralPath "$source/Build/ci/CMakeCache.txt" -Pattern '^ENABLE_DISCORD_RPC:BOOL=ON$' -Quiet)) { throw 'Discord RPC was not enabled in renderer configuration' }
     Invoke-Checked 'cmake' @('--build',"$source/Build/ci",'--target','ryty_gpu','--parallel','2')
     $binary = Get-ChildItem "$source/Build/ci" -Recurse -Filter libSceVideoOut.prx
     if (@($binary).Count -ne 1) { throw 'Expected exactly one renderer output' }
