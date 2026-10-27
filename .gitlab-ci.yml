@@ -1,10 +1,11 @@
 # CI runs on GitHub Actions; packages are uploaded to GitLab's Generic Package Registry.
+# The project CI/CD feature is disabled; this guard also prevents pipelines if re-enabled.
 # See docs/dev/CI.md. Do not allocate GitLab runners for this repository.
 workflow:
   rules:
     - when: never
 
-github-ci:
+gitlab-ci-disabled:
   script: echo 'Use xacidr4inx/RyGT-ci Actions and the GitLab rygt-ci Package Registry'
   rules:
     - when: never

@@ -4,6 +4,11 @@ GitLab is the authoritative source and download host. GitHub Actions in
 [`xacidr4inx/RyGT-ci`](https://github.com/xacidr4inx/RyGT-ci/actions/workflows/ci-package.yml)
 builds, tests, packages and publishes. No GitLab runner is used.
 
+GitLab project CI/CD is disabled (`builds_access_level=disabled`). The repository
+keeps a `workflow: when: never` guard as well. GitHub Actions remains enabled,
+and GitLab Package Registry remains enabled for CI ZIP uploads. Build status
+and logs are available in GitHub Actions rather than GitLab pipelines.
+
 The workflow checks the public GitLab `development` branch every 15 minutes and
 builds its exact commit when no completed CI package exists for that revision.
 GitHub schedules can be delayed. To start sooner or retry, use **Run workflow**;
