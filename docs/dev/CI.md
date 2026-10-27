@@ -47,17 +47,15 @@ artifacts expire after 14 days. Checksums are not publisher signatures.
 
 ## Renderer source
 
-`ci/prepare-renderer.py <new-directory>` checks out ShadGT commit
-`1d13c88d2e57bc63ce1586fe0b8f3342b6afdd19`, applies the camera patch first,
-then the DLSS patch and patches 0062 through 0097 in filename order, and
-initializes pinned submodules. Patch failures stop the job. Git long-path
-support is enabled for Windows dependency checkout.
+`renderer/source.json` pins a full commit on ShadGT's `ryty-gpu` branch.
+`ci/prepare-renderer.py <new-directory>` fetches that exact commit, verifies HEAD,
+and initializes its pinned submodules. CI does not apply renderer patches.
+Git long-path support remains enabled for Windows dependency checkout.
 
-The camera and temporal-upscaler patches overlap in `ryty_entry.cpp`.
-`ci/renderer-0064-camera-entry.patch` carries only that file's original 0064
-changes with camera-aware context; the rest of 0064 applies unchanged.
-Update the explicit patch range when publishing subsequent renderer patches.
-No local experimental shader overrides are incorporated.
+Renderer changes belong in ShadGT as ordinary commits. After testing and pushing
+them to `ryty-gpu`, update the commit in `renderer/source.json` for the next RyGT
+build. `CI-SOURCE.txt` in the renderer artifact records that revision.
+Unfinished local experiments are not included automatically.
 
 To build manually from a Windows x64 developer PowerShell, install the same
 LLVM distribution and set LLVM_ROOT to it, then run:
