@@ -1,94 +1,69 @@
-# GitLab CI
+# CI packages
 
-`.gitlab-ci.yml` builds on GitLab-hosted machines. No runner, service or build
-process on a developer PC is required. Branch pushes, merge requests and tags
-run CI; duplicate push/MR pipelines are suppressed.
+GitLab is the authoritative source and download host. GitHub Actions in
+[`xacidr4inx/RyGT-ci`](https://github.com/xacidr4inx/RyGT-ci/actions/workflows/ci-package.yml)
+builds, tests, packages and publishes. No GitLab runner is used.
 
-* `launcher`: Windows .NET Framework build of `loader/build.cmd`.
-* `renderer`: native Windows `ryty_gpu` build producing `libSceVideoOut.prx`,
-  PDB symbols, source provenance and SHA-256 checksums.
-* `converter-and-tests`: Ubuntu 24.04 Linux CLI build and CTest with JUnit output.
-* `package`: waits for all three jobs to succeed, downloads their required
-  artifacts, and assembles one verified Windows distribution ZIP plus its hash.
+The workflow checks the public GitLab `development` branch every 15 minutes and
+builds its exact commit when no completed CI package exists for that revision.
+GitHub schedules can be delayed. To start sooner or retry, use **Run workflow**;
+enable **force** to rebuild an already published revision. Changes arriving
+during a build are picked up by a later check. Builds are serialized to avoid
+duplicate uploads. Only development is automatically packaged; main, tags and
+merge-request branches are not publication inputs.
 
-The Windows jobs select GitLab's `saas-windows-medium-amd64` hosted runner.
-The renderer setup script installs LLVM 23.1.3 from the official archive,
-checks its pinned SHA-256, and installs CMake 3.31.6 and Ninja 1.11.1.4.
-The MSVC developer environment comes from the hosted image's Visual Studio
-C++ tools. The renderer uses two compiler workers and has a three-hour job
-limit. Hosted Windows provisioning can take several minutes. Availability,
-compute quota and the project's maximum job timeout still apply.
+## Downloads
 
-## GitHub Windows workers, GitLab pipelines
+Open GitLab **Deploy → Package Registry**, then package **rygt-ci**.
+Each version is `development-<full source commit>` and contains:
 
-`windows-on-github` is a GitLab job that dispatches the workflow pinned in
-`ci/github-actions.json`, waits for its exact request ID, and retrieves the Windows
-artifacts. GitHub builds the exact GitLab commit; it never needs a GitLab secret.
-GitLab verifies the workflow revision, artifact source revision and checksums.
-The existing Linux converter tests and final packaging remain on GitLab. ZIPs and
-checksums remain available in the GitLab package job's artifacts.
+- `RyGT-development-<short commit>.zip`
+- the matching `.zip.sha256`
+- `CI-BUILD.json`, recording source commit, checksum and GitHub run URL
 
-Set a **masked** GitLab variable `GITHUB_ACTIONS_TOKEN`, with variable expansion
-disabled. Use a fine-grained GitHub token restricted to `xacidr4inx/RyGT-ci` and
-repository **Actions: read and write**. Do not use an all-repositories token.
-If the variable is protected, it is available only to protected GitLab refs.
-Rotate it before its selected expiration date.
+These are CI builds. Publishing does not create a tag, release, announcement or
+changelog. The completion marker is uploaded last, after reading back and
+verifying both package files. Package versions persist until removed from the
+registry. GitHub intermediate artifacts expire after seven days.
 
-When this token is unavailable, CI retains the existing GitLab Windows jobs.
-Set `WINDOWS_CI_PROVIDER=gitlab` to select those jobs explicitly. The GitHub route
-is selected only when the provider is `github` and the token is available. A
-failed GitHub run fails its GitLab bridge job and prevents package publication.
-The bridge logs the GitHub run URL; cancellation after run discovery cancels the
-remote build. GitHub artifacts expire after 7 days; the fetched GitLab build
-artifacts retain their normal 14-day lifetime and packages retain 30 days.
+## Build and validation
 
-To update the runner workflow, review its new commit and update `workflow_commit`
-in `ci/github-actions.json`. Unexpected workflow revisions fail closed.
+The Windows job builds the launcher and pinned renderer using
+`ci/setup-hosted-windows.ps1` and `ci/build-windows.ps1`. A separate GitHub Linux
+job builds and tests the converter with CTest. Packaging requires both jobs to
+succeed and verifies source revisions, artifact checksums, runtime archive
+identity, required files, safe ZIP paths and packaged-file checksums.
 
-## Complete distribution package
+The Windows converter and other helper/runtime binaries still come from the
+immutable October 25 redistributable archive pinned by SHA-256 in `ci/package.py`.
+They are not rebuilt by this workflow; the Linux test binary is not substituted
+for a Windows executable. BUILD_INFO.txt records exactly what was rebuilt.
+Game executable/data, firmware, saves, logs, shader caches and NVIDIA SDK files
+are excluded. Compilation and package validation do not replace live GPU tests.
 
-Download `dist/RyGT-development-<commit>.zip` from the `package` job's artifacts.
-It contains the fresh CI launcher and renderer, the converter and other required
-redistributable runtime files, default configuration, documentation and licenses.
-Symbols stay in the renderer job artifact and are excluded from the release ZIP.
+`renderer/source.json` pins the ShadGT `ryty-gpu` commit. Push a renderer change
+there before publishing a RyGT pin that references it. Local investigation
+branches and unpushed renderer commits are not included automatically.
 
-The remaining Windows runtime/helper files, including `converter/ryty.exe` and
-`adcpatch.exe`, come from the immutable October 25 published prerelease archive,
-pinned by full SHA-256 in `ci/package.py`. The Linux converter test binary is not
-substituted for a Windows executable. This pipeline does **not** rebuild every
-runtime library or Windows helper. BUILD_INFO.txt records that distinction,
-the exact source revision, renderer patch list and runtime archive identity.
-Updating those retained files requires a reviewed change to the pinned runtime.
+## Workflow maintenance and credentials
 
-Package assembly verifies both build artifact checksums and source revisions,
-rejects unsafe ZIP paths and unwanted game/user data, checks required runtime
-files, regenerates the complete checksum manifest, then reads back and verifies
-every packaged file. No game executable/data, firmware, saves, logs, shader
-caches or NVIDIA SDK files are included. Players supply their own game and
-required firmware modules through normal setup.
+The reviewed workflow and control-script sources are retained under
+`ci/github-registry/`. The deployed copies live in the GitHub workflow repository
+as `.github/workflows/ci-package.yml` and `ci/registry_ci.py`. Update both together.
+Official actions are pinned to full commit IDs. The old GitLab bridge is retired;
+`.gitlab-ci.yml` explicitly disables GitLab pipelines.
 
-The package is a development artifact; CI does not create a release or publish
-a tag automatically. Package artifacts expire after 30 days; individual build
-artifacts expire after 14 days. Checksums are not publisher signatures.
+GitHub secret `GITLAB_PACKAGE_TOKEN` is a project deploy token restricted to
+RyGT package read/write access. It is exposed only to the final publish step,
+not to Windows builds or Linux converter tests. The initial token expires
+January 25, 2027; rotate it before then. It cannot create releases, modify source
+or report commit statuses. Build status and logs are in GitHub Actions; GitLab
+holds packages rather than runner jobs. Never put credentials in source files.
 
-## Renderer source
-
-`renderer/source.json` pins a full commit on ShadGT's `ryty-gpu` branch.
-`ci/prepare-renderer.py <new-directory>` fetches that exact commit, verifies HEAD,
-and initializes its pinned submodules. CI does not apply renderer patches.
-Git long-path support remains enabled for Windows dependency checkout.
-
-Renderer changes belong in ShadGT as ordinary commits. After testing and pushing
-them to `ryty-gpu`, update the commit in `renderer/source.json` for the next RyGT
-build. `CI-SOURCE.txt` in the renderer artifact records that revision.
-Unfinished local experiments are not included automatically.
-
-To build manually from a Windows x64 developer PowerShell, install the same
-LLVM distribution and set LLVM_ROOT to it, then run:
+To build manually in a Windows developer PowerShell, install LLVM 23.1.3 with
+compiler-rt, set `LLVM_ROOT`, and run:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File ci/build-windows.ps1 -Target Launcher
-powershell -NoProfile -ExecutionPolicy Bypass -File ci/build-windows.ps1 -Target Renderer
+./ci/build-windows.ps1 -Target Launcher
+./ci/build-windows.ps1 -Target Renderer
 ```
-
-Successful CI compilation and packaging do not replace live game/GPU validation.
