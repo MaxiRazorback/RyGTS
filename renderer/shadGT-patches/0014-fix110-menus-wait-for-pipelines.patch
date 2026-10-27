@@ -1,0 +1,172 @@
+From cfc7922e0df189a84818724c8cccea886f8334cb Mon Sep 17 00:00:00 2001
+From: mlgprorektm8 <67933lance@gmail.com>
+Date: Fri, 16 Oct 2026 18:50:17 -0500
+Subject: [PATCH] FIX-110: in GT Sport's menus draws wait for new pipelines
+
+Which project runs (race_* or a menu project) is read from the project script the game
+loads. Only races skip draws while their pipelines build; in the menus some scenes draw
+once into a texture they keep showing, and the home screen's GR86 slide played on black
+instead of the Fuji pit straight with a fresh shader store. -DisablePerf 134 skips in the
+menus too.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ ryty_gpu/ryty_game_patch.cpp                  | 47 +++++++++++++++++--
+ .../renderer_vulkan/vk_pipeline_cache.cpp     | 23 ++++++++-
+ .../renderer_vulkan/vk_pipeline_cache.h       |  2 +
+ 3 files changed, 67 insertions(+), 5 deletions(-)
+
+diff --git a/ryty_gpu/ryty_game_patch.cpp b/ryty_gpu/ryty_game_patch.cpp
+index e5474adc..5d91e9a8 100644
+--- a/ryty_gpu/ryty_game_patch.cpp
++++ b/ryty_gpu/ryty_game_patch.cpp
+@@ -10,6 +10,7 @@
+ 
+ #include <cstdio>
+ #include <algorithm>
++#include <atomic>
+ #include <chrono>
+ #include <cstdlib>
+ #include <cstring>
+@@ -17,6 +18,7 @@
+ #include <iterator>
+ #include <mutex>
+ #include <string>
++#include <string_view>
+ #include <thread>
+ #include <vector>
+ #include <windows.h>
+@@ -571,6 +573,39 @@ void LoadScriptReplacements() {
+     FindClose(find);
+ }
+ 
++// FIX-110: whether a race (any race_* project) or the menus (gtmode, arcade and the other menu
++// projects) run, from the project script the game loads when it switches. Overlays a race loads
++// (dialogs, the meter, the pause menu) don't change it. The renderer skips draws for new
++// pipelines only in races; in the menus some scenes draw once into a texture they keep showing.
++std::atomic<bool> g_in_race{false};
++
++void NoteProjectScript(const u8* data, s64 read) {
++    if (read < 16 || std::memcmp(data, "ADCH012", 8) != 0) {
++        return;
++    }
++    const std::string_view head{reinterpret_cast<const char*>(data),
++                                static_cast<size_t>(std::min<s64>(read, 200))};
++    const auto at = head.find("projects/gt7sp/");
++    if (at == std::string_view::npos) {
++        return;
++    }
++    std::string_view name = head.substr(at + 15);
++    name = name.substr(0, name.find('/'));
++    static constexpr std::string_view menus[] = {
++        "gtmode", "arcade", "campaign", "garage", "brand_central", "gallery", "livery2",
++        "photo", "play_photo", "option", "ps_store", "car_select", "course_select",
++        "event_setting", "preview", "car_preview", "online", "boot", "demo"};
++    const bool race = name.starts_with("race");
++    if (!race && std::find(std::begin(menus), std::end(menus), name) == std::end(menus)) {
++        return;
++    }
++    if (g_in_race.exchange(race) != race) {
++        std::fprintf(stderr, "[patch] FIX-110 %.*s: %s\n", static_cast<int>(name.size()),
++                     name.data(), race ? "race, new pipelines are built in the background"
++                                       : "menus, draws wait for new pipelines");
++    }
++}
++
+ s64 PS4_SYSV_ABI StreamRefillHook(void* file, GuestIoVec* iov) {
+     const s64 read = g_file_read(file, iov);
+     if (read <= 0 || !iov || !iov->base) {
+@@ -581,6 +616,7 @@ s64 PS4_SYSV_ABI StreamRefillHook(void* file, GuestIoVec* iov) {
+     if (!g_script_replacements.empty()) {
+         ServeReplacement(file, begin, read);
+     }
++    NoteProjectScript(begin, read); // FIX-110
+     static const bool log_scripts = std::getenv("RYGT_LOG_SCRIPTS") != nullptr;
+     if (log_scripts) {
+         // DIAG-107: the start of each script chunk read (first 48 printable bytes).
+@@ -615,9 +651,7 @@ void InstallScriptPatches(u8* base) {
+     if (!(std::getenv("RYGT_SCRIPTS") && std::getenv("RYGT_SCRIPTS")[0] == '0')) {
+         LoadScriptReplacements();
+     }
+-    if (g_script_patches.empty() && g_script_replacements.empty()) {
+-        return;
+-    }
++    // The hook stays in without patches too: FIX-110 reads which project the game loads.
+     u8* stubs = AllocNear(base);
+     if (!stubs) {
+         std::fprintf(stderr, "[patch] GTS-003: no memory near the game's code for the hooks\n");
+@@ -921,3 +955,10 @@ void RytyApplyGamePatches() {
+         start = end + 1;
+     }
+ }
++
++namespace Vulkan {
++// FIX-110: true while a race project runs (see NoteProjectScript).
++bool RytyGtsInRace() {
++    return g_in_race.load(std::memory_order_relaxed);
++}
++} // namespace Vulkan
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+index d867b150..e0d3c7b9 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+@@ -923,6 +923,24 @@ std::shared_ptr<PipelineCache::PipelineBuild> PipelineCache::StartPipelineBuild(
+     return build;
+ }
+ 
++#ifdef RYTY_GPU
++bool RytyGtsInRace(); // FIX-110, ryty_game_patch.cpp
++#endif
++
++bool PipelineCache::MenusWait() {
++    // FIX-110: in GT Sport's menus a draw waits for its new pipeline (the guest clocks are held
++    // meanwhile, as in the "pause" compile mode); only races skip draws. Some menu scenes draw
++    // once into a texture they keep showing: the GR86 slide of the home screen played on black
++    // instead of the Fuji pit straight when its scenery draws were skipped while they built.
++    // -DisablePerf 134 skips in the menus too.
++#ifdef RYTY_GPU
++    static const bool enabled = Common::PerfFeatureEnabled(134);
++    return enabled && !RytyGtsInRace();
++#else
++    return false;
++#endif
++}
++
+ bool PipelineCache::CancelBuild(PipelineBuild& build) {
+     // A worker may already have taken the job and wait in FinishBuild for whoever claimed the
+     // build; release it, the build stays empty.
+@@ -1387,7 +1405,8 @@ const GraphicsPipeline* PipelineCache::PipelineForCurrentKey(const DrawIndirectP
+                 }
+                 return it->second.get();
+             }
+-            if (stored->async && !key_uses_legacy && !WritesMemory(infos) && !NeverSkipped(infos)) {
++            if (stored->async && !key_uses_legacy && !WritesMemory(infos) && !NeverSkipped(infos) &&
++                !MenusWait()) {
+                 // PERF-076: still building; this draw is skipped, the next ones look again.
+                 graphics_pipelines.erase(it);
+                 ++async_stats.skipped_draws;
+@@ -1443,7 +1462,7 @@ const GraphicsPipeline* PipelineCache::PipelineForCurrentKey(const DrawIndirectP
+         // D10: a pipeline of old translations is built right away (the driver usually has it
+         // from the old renderer's sessions, so it takes milliseconds).
+         if (build && AsyncPipelines() && !key_uses_legacy && !WritesMemory(infos) &&
+-            !NeverSkipped(infos) &&
++            !NeverSkipped(infos) && !MenusWait() &&
+             build->done.wait_for(std::chrono::seconds{0}) != std::future_status::ready) {
+             build->async = true;
+             pending_builds[graphics_key] = build;
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.h b/src/video_core/renderer_vulkan/vk_pipeline_cache.h
+index b29a8c6d..16f355c3 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.h
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.h
+@@ -151,6 +151,8 @@ private:
+     void BuildQueuedStates(const DrawIndirectParams params, bool restore);
+     /// PERF-038: claims a build nobody started, so it is never built; false if one started.
+     static bool CancelBuild(PipelineBuild& build);
++    /// FIX-110: in the menus draws wait for new pipelines instead of being skipped.
++    static bool MenusWait();
+     /// PERF-038: queues a stored pipeline's build behind all other builds.
+     void QueueBackgroundBuild(const std::shared_ptr<PipelineBuild>& build);
+     /// PERF-038: on this thread, between draws: takes stored pipelines the reader thread
+-- 
+2.56.0.windows.1
+

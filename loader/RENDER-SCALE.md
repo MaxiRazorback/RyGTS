@@ -1,0 +1,15 @@
+# Experimental scene render scale
+
+Graphics -> Scene render scale (EXPERIMENTAL) selects scene resolution independently of DLSS/FSR. Requires Native renderer and PS4Pro mode off. Disabled by default. Rebuild the launcher and apply renderer patch0090 after0089. A matching renderer is required; an older one may not understand the requested dimensions.
+
+Presets use linear dimensions relative to selected output: Ultra Performance1/3, Performance1/2, Balanced1/1.7, Quality2/3, Native1. The game scene stays16:9 with dimensions aligned in16x9 units, currently bounded320x180 through3840x2160. The preview shows calculated scene and selected output dimensions, so alignment/aspect limits are visible. Borderless output uses the launcher's display bounds. Restart the game after changes.
+
+The launcher verifies three executable patch signatures, passes the chosen scene allocation dimensions through startup-only patches, and supplies RYGT_SCENE_WIDTH/HEIGHT to the renderer's scoped viewport and final-composition binding. Game files are not patched on disk. Unsupported game signatures or a conflicting inherited RYGT_PATCH stop startup. Disabling the option clears inherited experimental scene dimensions/viewport flag. The separate low-resolution composition experiment is not implicitly enabled by render scaling.
+
+No upscaler is required or enabled automatically. When DLSS is already enabled, its quality setting follows the preset; existing FSR auto-scale policy is retained if FSR is enabled. Scene scaling alone is not proof of temporal upscaling. The game's composition/HUD backing can remain1920x1080 while scene targets shrink; presentation output remains independently selected. Arbitrary output pipelines and upscalers require capture validation.
+
+Current local test: user reports correct rendering at1280x720 scene. Renderer logs independently confirm a registered GPU-rendered1280x720 target and matching scene viewport, with1920x1080 game composition. Earlier960x540 tests also passed menus/showroom and track transitions.720p/1080p/4K preset calculations and patch generation are tested; this is not runtime validation of every preset or4K allocation.
+
+Patch0091 changes the game title segment to output ->observed scene dimensions, for example1920x1080 ->1280x720, without an upscaler label. It observes matching registered scene targets with an atomic extent and uses source dimensions until a target is observed. Both presentation paths share the formatter. The title build passed imports/image checks; the latest formatting change awaited runtime restart at publication.
+
+Build checks: launcher compilation (existingCS1690UI warning),2893 renderer imports and native image self-test passed. The lifecycle tests under shader-cache-tests/RenderScaleTests.cs cover calculation, patch bytes, disabled cleanup and signature/conflict rejection. Compile that test separately with RenderResolution.cs and System.Drawing.dll; it is not part of the launcher executable. No binaries or shader caches are committed.

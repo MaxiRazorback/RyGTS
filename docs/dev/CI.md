@@ -1,18 +1,70 @@
-# CI
+# GitLab CI
 
-`.github/workflows/CI.yml` is the single workflow file. Detailed behaviour is
-documented in [`ci/README.md`](../../ci/README.md); the short version:
+`.gitlab-ci.yml` builds on GitLab-hosted machines. No runner, service or build
+process on a developer PC is required. Branch pushes, merge requests and tags
+run CI; duplicate push/MR pipelines are suppressed.
 
-* **linux** (ubuntu-24.04): Qt 6.8.2 via `install-qt-action`, `linux-release`
-  preset, full `ctest`, GUI bundled into a self-contained AppImage with the
-  Qt6 runtime embedded, headless smoke test, zip with the CLI + AppImage.
-* **windows** (windows-latest, MSYS2 UCRT64): `windows-release` preset, full
-  `ctest`, GUI packaged with `windeployqt6` (every Qt6 DLL/plugin next to
-  `ryty-gui.exe`), zip with the CLI + GUI bundle.
-* **linux-cli** (ubuntu-24.04, no Qt): builds the `linux-release-cli` preset
-  to guard the graceful GUI skip.
+* `launcher`: Windows .NET Framework build of `loader/build.cmd`.
+* `renderer`: native Windows `ryty_gpu` build producing `libSceVideoOut.prx`,
+  PDB symbols, source provenance and SHA-256 checksums.
+* `converter-and-tests`: Ubuntu 24.04 Linux CLI build and CTest with JUnit output.
+* `package`: waits for all three jobs to succeed, downloads their required
+  artifacts, and assembles one verified Windows distribution ZIP plus its hash.
 
-Every push and pull request produces artifacts; `v*` tags additionally
-publish a GitHub release with both platform zips. The GUI bundling recipe was
-validated end-to-end: the packaged AppImage runs headless
-(`QT_QPA_PLATFORM=offscreen`) with zero Qt on the host.
+The Windows jobs select GitLab's `saas-windows-medium-amd64` hosted runner.
+The renderer setup script installs LLVM 23.1.3 from the official archive,
+checks its pinned SHA-256, and installs CMake 3.31.6 and Ninja 1.11.1.4.
+The MSVC developer environment comes from the hosted image's Visual Studio
+C++ tools. The renderer uses two compiler workers and has a three-hour job
+limit. Hosted Windows provisioning can take several minutes. Availability,
+compute quota and the project's maximum job timeout still apply.
+
+## Complete distribution package
+
+Download `dist/RyGT-development-<commit>.zip` from the `package` job's artifacts.
+It contains the fresh CI launcher and renderer, the converter and other required
+redistributable runtime files, default configuration, documentation and licenses.
+Symbols stay in the renderer job artifact and are excluded from the release ZIP.
+
+The remaining Windows runtime/helper files, including `converter/ryty.exe` and
+`adcpatch.exe`, come from the immutable October 25 published prerelease archive,
+pinned by full SHA-256 in `ci/package.py`. The Linux converter test binary is not
+substituted for a Windows executable. This pipeline does **not** rebuild every
+runtime library or Windows helper. BUILD_INFO.txt records that distinction,
+the exact source revision, renderer patch list and runtime archive identity.
+Updating those retained files requires a reviewed change to the pinned runtime.
+
+Package assembly verifies both build artifact checksums and source revisions,
+rejects unsafe ZIP paths and unwanted game/user data, checks required runtime
+files, regenerates the complete checksum manifest, then reads back and verifies
+every packaged file. No game executable/data, firmware, saves, logs, shader
+caches or NVIDIA SDK files are included. Players supply their own game and
+required firmware modules through normal setup.
+
+The package is a development artifact; CI does not create a release or publish
+a tag automatically. Package artifacts expire after 30 days; individual build
+artifacts expire after 14 days. Checksums are not publisher signatures.
+
+## Renderer source
+
+`ci/prepare-renderer.py <new-directory>` checks out ShadGT commit
+`1d13c88d2e57bc63ce1586fe0b8f3342b6afdd19`, applies the camera patch first,
+then the DLSS patch and patches 0062 through 0097 in filename order, and
+initializes pinned submodules. Patch failures stop the job. Git long-path
+support is enabled for Windows dependency checkout.
+
+The camera and temporal-upscaler patches overlap in `ryty_entry.cpp`.
+`ci/renderer-0064-camera-entry.patch` carries only that file's original 0064
+changes with camera-aware context; the rest of 0064 applies unchanged.
+Update the explicit patch range when publishing subsequent renderer patches.
+No local experimental shader overrides are incorporated.
+
+To build manually from a Windows x64 developer PowerShell, install the same
+LLVM distribution and set LLVM_ROOT to it, then run:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File ci/build-windows.ps1 -Target Launcher
+powershell -NoProfile -ExecutionPolicy Bypass -File ci/build-windows.ps1 -Target Renderer
+```
+
+Successful CI compilation and packaging do not replace live game/GPU validation.

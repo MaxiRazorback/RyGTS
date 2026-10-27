@@ -3,10 +3,21 @@
 #include "SceTypes.hpp"
 #include "prx/libc/include/General.hpp"
 #include "prx/libc/include/HeapDiagnostics.hpp"
+#ifdef _WIN32
+#include <io.h>
+#endif
 
 uint32_t Need_sceLibc = 1;
 
 extern "C" {
+
+int APS5_VABI fsync(int fd) {
+#ifdef _WIN32
+    return ::_commit(fd);
+#else
+    return ::fsync(fd);
+#endif
+}
 
     int APS5_VABI std_execute_once_nid_postfix(int* flag, int (*func)(void*, void*, void**), void* arg) {
         (void)flag;

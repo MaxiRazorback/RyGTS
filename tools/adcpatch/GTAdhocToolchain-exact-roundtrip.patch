@@ -1,0 +1,29 @@
+diff --git a/GTAdhocToolchain.Core/AdhocStream.cs b/GTAdhocToolchain.Core/AdhocStream.cs
+index a6d326d..4250825 100644
+--- a/GTAdhocToolchain.Core/AdhocStream.cs
++++ b/GTAdhocToolchain.Core/AdhocStream.cs
+@@ -1,4 +1,4 @@
+-﻿// Copyright (c) 2026 Nenkai
++// Copyright (c) 2026 Nenkai
+ // SPDX-License-Identifier: MIT
+ 
+ using GTAdhocToolchain.Core;
+@@ -384,6 +384,8 @@ public class AdhocStream : Stream
+         Write(data);
+     }
+ 
++    public static Dictionary<string, int> SymbolIdsByName;
++
+     public void WriteSymbols(IEnumerable<AdhocSymbol> symbols)
+     {
+         WriteInt32(symbols.Count());
+@@ -409,7 +411,8 @@ public class AdhocStream : Stream
+         }
+         else if (Version.VersionNumber >= 9)
+         {
+-            WriteVarInt(symbol.Id);
++            // ryGT adcpatch: when set, ids come from the original script's symbol table by name.
++            WriteVarInt(SymbolIdsByName != null && SymbolIdsByName.TryGetValue(symbol.Name, out var id) ? id : symbol.Id);
+         }
+         else
+         {

@@ -2,6 +2,8 @@
 #define CORE_LIBS_PRX_LIBC_INCLUDE_GENERAL_LOGMACROS_HPP
 
 #include <cstring>
+#include <cstdio>
+#include "StdoutLog.hpp"
 
 inline const char* TrimNidPostfix(const char* func) {
     return func;
@@ -30,12 +32,15 @@ constexpr const char* BaseName(const char* path) {
 #define _APS5_FILE_ BaseName(__FILE__)
 
 #define _APS5_LOG_IMPL(stream, fmt, ...) \
-(std::fprintf(stream, "[%s:%d %s] " fmt "\n", _APS5_FILE_, __LINE__, TrimNidPostfix(__func__), __VA_ARGS__), \
-std::fflush(stream))
+((stream == stdout && !RuntimeStdoutLog::Enabled()) ? 0 : (std::fprintf(stream, "[%s:%d %s] " fmt "\n", _APS5_FILE_, __LINE__, TrimNidPostfix(__func__), __VA_ARGS__), \
+std::fflush(stream)))
 
 #define _APS5_LOG_IMPL_NF(stream, fmt) \
-(std::fprintf(stream, "[%s:%d %s] " fmt "\n", _APS5_FILE_, __LINE__, TrimNidPostfix(__func__)), \
-std::fflush(stream))
+((stream == stdout && !RuntimeStdoutLog::Enabled()) ? 0 : (std::fprintf(stream, "[%s:%d %s] " fmt "\n", _APS5_FILE_, __LINE__, TrimNidPostfix(__func__)), \
+std::fflush(stream)))
+
+#define APS5_LOG_TRACE(fmt, ...) \
+(RuntimeStdoutLog::Enabled(0) ? _APS5_LOG_IMPL(stdout, fmt, __VA_ARGS__) : 0)
 
 #define APS5_LOG_OUT(fmt, ...) _APS5_LOG_IMPL(stdout, fmt, __VA_ARGS__)
 #define APS5_LOG_ERR(fmt, ...) _APS5_LOG_IMPL(stderr, fmt, __VA_ARGS__)

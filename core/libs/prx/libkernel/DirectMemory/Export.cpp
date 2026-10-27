@@ -1,3 +1,4 @@
+#include <atomic>
 #include <cstdint>
 #include <cstddef>
 #include <cstring>
@@ -5,13 +6,17 @@
 #include "prx/libc/include/General.hpp"
 #include "prx/libc/include/GuestAllocations.hpp"
 #include "prx/libkernel/DirectMemory/DirectMemory.hpp"
+#include "prx/libkernel/KernelErrors.hpp"
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
+#ifndef NOMINMAX
 #define NOMINMAX
+#endif
 #include <windows.h>
 #else
 #include <fstream>
 #include <sstream>
+#include <sys/mman.h>
 #endif
 #include <algorithm>
 #include <stdexcept>
@@ -108,6 +113,25 @@ void _releaseFlexible(uintptr_t start, size_t len) {
 
 }
 
+// A Ryty error thrown inside a memory call reached the game's code, which cannot unwind it, and
+// ended the process (Lance's crash leaving a race for the home menu, 5,500 map changes in the last
+// 2 s). The call now fails with an error the game can handle, and the reason is logged.
+template <typename F>
+int GuardMemoryCall(const char* name, F&& call) {
+    try {
+        return call();
+    } catch (const std::bad_alloc&) {
+        std::fprintf(stderr, "[memory] %s: out of host memory\n", name);
+        return SCE_KERNEL_ERROR_ENOMEM;
+    } catch (const std::exception& error) {
+        static std::atomic<unsigned> logged{0};
+        if (logged.fetch_add(1) < 50) {
+            std::fprintf(stderr, "[memory] %s failed: %s\n", name, error.what());
+        }
+        return SCE_KERNEL_ERROR_EINVAL;
+    }
+}
+
 extern "C" {
 
 int APS5_VABI sceKernelAllocateDirectMemory(int64_t search_start, int64_t search_end, size_t len, size_t alignment, int memory_type, int64_t* phys_addr_out) {
@@ -150,57 +174,75 @@ size_t APS5_VABI sceKernelGetDirectMemorySize(void) {
 }
 
 int APS5_VABI sceKernelMapDirectMemory(void** addr, size_t len, int prot, int flags, int64_t direct_memory_start, size_t alignment) {
+ return GuardMemoryCall("sceKernelMapDirectMemory", [&]() -> int {
  void* requested = addr ? *addr : nullptr;
  const int result = DoMapDirect(addr, len, prot, flags, direct_memory_start, alignment);
  if (result != 0) std::fprintf(stderr, "[memory] map direct %p len=0x%zx prot=0x%x flags=0x%x phys=0x%llx align=0x%zx failed: 0x%x\n", requested, len, prot, flags, static_cast<long long>(direct_memory_start), alignment, result);
  return result;
+ });
 }
 
 int APS5_VABI sceKernelMapDirectMemory2(void** addr, size_t len, int type, int prot, int flags, int64_t direct_memory_start, size_t alignment) {
+ return GuardMemoryCall("sceKernelMapDirectMemory2", [&]() -> int {
  (void)type;
  return DoMapDirect(addr, len, prot, flags, direct_memory_start, alignment);
+ });
 }
 
 int APS5_VABI sceKernelMapFlexibleMemory(void** addr_in_out, size_t len, int prot, int flags) {
+ return GuardMemoryCall("sceKernelMapFlexibleMemory", [&]() -> int {
  return _mapFlexible(addr_in_out, len, prot, flags);
+ });
 }
 
 int APS5_VABI sceKernelSetVirtualRangeName(const void* addr, uint64_t len, const char* name);
 
 int APS5_VABI sceKernelMapNamedDirectMemory(void** addr, size_t len, int prot, int flags, int64_t direct_memory_start, size_t alignment, const char* name) {
+ return GuardMemoryCall("sceKernelMapNamedDirectMemory", [&]() -> int {
  const int result = DoMapDirect(addr, len, prot, flags, direct_memory_start, alignment);
  if (result == 0 && name) sceKernelSetVirtualRangeName(*addr, len, name);
  return result;
+ });
 }
 
 int32_t APS5_VABI sceKernelMapNamedFlexibleMemory(void** addr_in_out, size_t len, int prot, int flags, const char* name) {
+ return GuardMemoryCall("sceKernelMapNamedFlexibleMemory", [&]() -> int {
  const int result = _mapFlexible(addr_in_out, len, prot, flags);
  if (result == 0 && name) sceKernelSetVirtualRangeName(*addr_in_out, len, name);
  return result;
+ });
 }
 
 int APS5_VABI sceKernelMprotect(const void* addr, size_t len, int prot) {
+ return GuardMemoryCall("sceKernelMprotect", [&]() -> int {
  return DoMprotect(addr, len, prot);
+ });
 }
 
 int APS5_VABI sceKernelMunmap(uint64_t vaddr, size_t len) {
+ return GuardMemoryCall("sceKernelMunmap", [&]() -> int {
  const int result = DoMunmap(reinterpret_cast<void*>(vaddr), len);
  if (result == 0) _releaseFlexible(static_cast<uintptr_t>(vaddr), len);
  return result;
+ });
 }
 
 int APS5_VABI sceKernelReleaseDirectMemory(int64_t start, size_t len) {
+ return GuardMemoryCall("sceKernelReleaseDirectMemory", [&]() -> int {
  if (start < 0 || len == 0) return SCE_KERNEL_ERROR_EINVAL;
  UnmapDirectMemory(start, len);
  DirectMemoryFree(start, len);
  return 0;
+ });
 }
 
 int APS5_VABI sceKernelReserveVirtualRange(void** addr, size_t len, int flags, size_t alignment) {
+ return GuardMemoryCall("sceKernelReserveVirtualRange", [&]() -> int {
  void* requested = addr ? *addr : nullptr;
  const int result = DoReserveVirtual(addr, len, flags, alignment);
  if (result != 0) std::fprintf(stderr, "[memory] reserve %p len=0x%zx flags=0x%x align=0x%zx failed: 0x%x\n", requested, len, flags, alignment, result);
  return result;
+ });
 }
 
 int APS5_VABI sceKernelVirtualQuery(const void* addr, int flags, VirtualQueryInfo* info, uint64_t info_size) {
@@ -284,6 +326,7 @@ int APS5_VABI sceKernelVirtualQuery(const void* addr, int flags, VirtualQueryInf
 
 // As sceKernelReleaseDirectMemory, but the whole range must be allocated.
 int APS5_VABI sceKernelCheckedReleaseDirectMemory(int64_t start, size_t len) {
+ return GuardMemoryCall("sceKernelCheckedReleaseDirectMemory", [&]() -> int {
  if (start < 0 || len == 0 || (static_cast<std::uint64_t>(start) & (PS5_PAGE_SIZE - 1)) != 0 || (len & (PS5_PAGE_SIZE - 1)) != 0) return SCE_KERNEL_ERROR_EINVAL;
  for (std::uint64_t offset = 0; offset < len;) {
   int64_t blockStart = 0;
@@ -294,11 +337,14 @@ int APS5_VABI sceKernelCheckedReleaseDirectMemory(int64_t start, size_t len) {
   offset = static_cast<std::uint64_t>(blockEnd) - static_cast<std::uint64_t>(start);
  }
  return sceKernelReleaseDirectMemory(start, len);
+ });
 }
 
 int APS5_VABI sceKernelMtypeprotect(const void* addr, size_t len, int type, int prot) {
+ return GuardMemoryCall("sceKernelMtypeprotect", [&]() -> int {
  (void)type;
  return DoMprotect(addr, len, prot);
+ });
 }
 
 int APS5_VABI sceKernelQueryMemoryProtection(void* addr, void** start, void** end, int* prot) {
@@ -381,6 +427,7 @@ int APS5_VABI sceKernelBatchMap(KernelBatchMapEntry* entries, int num_entries, i
 }
 
 int APS5_VABI sceKernelBatchMap2(KernelBatchMapEntry* entries, int num_entries, int* num_entries_out, int flags) {
+ return GuardMemoryCall("sceKernelBatchMap2", [&]() -> int {
  if (!entries || num_entries < 0) return SCE_KERNEL_ERROR_EINVAL;
  constexpr int OpMapDirect = 0;
  constexpr int OpUnmap = 1;
@@ -412,6 +459,7 @@ int APS5_VABI sceKernelBatchMap2(KernelBatchMapEntry* entries, int num_entries, 
  }
  if (num_entries_out) *num_entries_out = processed;
  return result;
+ });
 }
 
 }
@@ -419,9 +467,15 @@ int APS5_VABI sceKernelBatchMap2(KernelBatchMapEntry* entries, int num_entries, 
 extern "C" {
 
 int APS5_VABI sceKernelMlock_nid_postfix(void* address, std::uint64_t length) {
-    (void)address;
-    (void)length;
-    NotImplemented_nid_no_patch(__func__);
+    if (!address || length == 0 || length > static_cast<std::uint64_t>(SIZE_MAX)) return SCE_KERNEL_ERROR_EINVAL;
+#ifdef _WIN32
+    return VirtualLock(address, static_cast<SIZE_T>(length)) ? 0 : SCE_KERNEL_ERROR_ENOMEM;
+#else
+    return ::mlock(address, static_cast<std::size_t>(length)) == 0 ? 0 : SCE_KERNEL_ERROR_ENOMEM;
+#endif
+}
+
+int APS5_VABI sceKernelMunlock() {
     return 0;
 }
 

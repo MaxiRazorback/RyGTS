@@ -2,12 +2,41 @@
 #include <cstdint>
 #include <cstring>
 #include <cstdlib>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 #include "prx/libc/include/Shutdown.hpp"
 #include "SceTypes.hpp"
 #include "prx/libc/include/General.hpp"
 #include "prx/libSceSystemService/SystemService.hpp"
 
 extern "C" {
+
+int APS5_VABI sceSystemServiceGetVersionNumberOfCameraCalibrationData() {
+    return 0;
+}
+
+int APS5_VABI sceSystemServiceRequestCameraCalibration() {
+    return 0;
+}
+
+int APS5_VABI sceSystemServiceSetOutOfVrPlayAreaFlag(int flag) {
+    (void)flag;
+    return 0;
+}
+
+int APS5_VABI sceSystemServiceSetOutOfVrPlayZoneWarning(int flag) {
+    (void)flag;
+    return 0;
+}
+
+int APS5_VABI sceSystemServiceDisableMusicPlayer() {
+    return 0;
+}
+
+int APS5_VABI sceSystemServiceReenableMusicPlayer() {
+    return 0;
+}
 
 int APS5_VABI sceSystemServiceLoadExec(const char* path, const char* const* arguments) {
     if (!path || !*path) return SYSTEM_SERVICE_ERROR_PARAMETER;
@@ -60,6 +89,17 @@ int APS5_VABI sceSystemServiceGetStatus(SystemServiceStatus* status) {
 }
 
 int APS5_VABI sceSystemServiceHideSplashScreen(void) {
+#ifdef _WIN32
+    // RyGT: the renderer (shadGT's libSceVideoOut.prx) shows the game's splash screen until the
+    // game hides it, as the system does on the console.
+    using HideFunction = void (*)();
+    if (const HMODULE renderer = GetModuleHandleA("libSceVideoOut.prx")) {
+        if (const auto hide = reinterpret_cast<HideFunction>(
+                reinterpret_cast<void*>(GetProcAddress(renderer, "RytyGpuHideSplashScreen")))) {
+            hide();
+        }
+    }
+#endif
  return SYSTEM_SERVICE_OK;
 }
 

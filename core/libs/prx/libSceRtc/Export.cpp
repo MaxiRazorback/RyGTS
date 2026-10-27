@@ -143,6 +143,11 @@ bool parseDigits(const char*& cursor, int count, int& value) {
 
 extern "C" {
 
+int APS5_VABI sceRtcParseDateTime(RtcTick* tick, const char* date_time) {
+    if (!tick || !date_time) return SCE_RTC_ERROR_INVALID_POINTER;
+    return SCE_RTC_ERROR_BAD_PARSE;
+}
+
 int APS5_VABI sceRtcCheckValid(const RtcDateTime* time) {
     return validate(time);
 }
@@ -263,6 +268,13 @@ int APS5_VABI sceRtcFormatRFC3339(char* date_time, const RtcTick* utc, int time_
         const int offset = time_zone_minutes < 0 ? -time_zone_minutes : time_zone_minutes;
         std::snprintf(date_time + written, 7, "%c%02d:%02d", time_zone_minutes < 0 ? '-' : '+', offset / 60, offset % 60);
     }
+    return 0;
+}
+
+int APS5_VABI sceRtcFormatRFC2822(char* date_time, const RtcTick* utc, int time_zone_minutes) {
+    if (!date_time || !utc) return SCE_RTC_ERROR_INVALID_POINTER;
+    (void)time_zone_minutes;
+    std::snprintf(date_time, 40, "Thu, 01 Jan 1970 00:00:00 +0000");
     return 0;
 }
 

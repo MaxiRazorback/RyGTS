@@ -1,0 +1,108 @@
+From 0000000000000000000000000000000000000019 Mon Sep 17 00:00:00 2001
+From: Tanos <68923270+tanosshi@users.noreply.github.com>
+Date: Mon, 19 Oct 2026 11:10:00 +0200
+Subject: [PATCH] Limit concurrent Vulkan pipeline compilations
+
+Bound foreground and splash-screen pipeline compilation concurrency so a
+large burst cannot overwhelm the graphics driver. Runtime compilation keeps
+multiple workers, capped at four concurrent driver builds.
+
+---
+diff --git a/src/video_core/renderer_vulkan/build_queue.h b/src/video_core/renderer_vulkan/build_queue.h
+index 6b8daae..5c8cff9 100644
+--- a/src/video_core/renderer_vulkan/build_queue.h
++++ b/src/video_core/renderer_vulkan/build_queue.h
+@@ -27,8 +27,9 @@ public:
+     using Clock = std::chrono::steady_clock;
+     enum class Kind { Urgent, Normal, Background };
+ 
+-    explicit BuildQueue(u32 max_background_, u32 max_boost_ = 0)
+-        : max_background{max_background_}, max_boost{std::max(max_background_, max_boost_)} {}
++    explicit BuildQueue(u32 max_foreground_, u32 max_background_, u32 max_boost_ = 0)
++        : max_foreground{max_foreground_}, max_background{max_background_},
++          max_boost{std::max(max_background_, max_boost_)} {}
+ 
+     /// PERF-098: while the splash screen shows, background jobs run on every worker and are
+     /// never paused (no game draw waits for a pipeline yet).
+@@ -68,7 +69,7 @@ public:
+             if (stop.stop_requested()) {
+                 return false;
+             }
+-            if (!jobs.empty()) {
++            if (!jobs.empty() && running_foreground < max_foreground) {
+                 job = std::move(jobs.front());
+                 jobs.pop_front();
+                 is_background = false;
+@@ -88,21 +89,26 @@ public:
+             }
+             if (!background.empty() && paused) {
+                 cv.wait_until(lk, stop, pause_until, [&] {
+-                    return !jobs.empty() || Clock::now() >= pause_until;
++                    return (!jobs.empty() && running_foreground < max_foreground) ||
++                           Clock::now() >= pause_until;
+                 });
+             } else {
+                 cv.wait(lk, stop, [&] {
+                     const u32 limit = boost.load(std::memory_order_relaxed) ? max_boost
+                                                                             : max_background;
+-                    return !jobs.empty() || (!background.empty() && running_background < limit);
++                    return (!jobs.empty() && running_foreground < max_foreground) ||
++                           (!background.empty() && running_background < limit);
+                 });
+             }
+         }
+     }
+ 
+     void FinishedForeground() {
+-        std::scoped_lock lk{mutex};
+-        --running_foreground;
++        {
++            std::scoped_lock lk{mutex};
++            --running_foreground;
++        }
++        cv.notify_one();
+     }
+ 
+     /// PERF-101: no draw or read-ahead build is queued or running.
+@@ -136,6 +142,7 @@ public:
+     }
+ 
+ private:
++    const u32 max_foreground;
+     const u32 max_background;
+     const u32 max_boost;
+     std::atomic<bool> boost{false};
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+index 4781d10..0f17f46 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+@@ -229,9 +229,11 @@ PrecompileProgress GetPrecompileProgress() {
+ // PERF-038: stored pipelines are built in the background on a few of them, at low priority.
+ class PipelineCache::PipelineBuildWorkers {
+ public:
+-    PipelineBuildWorkers() : queue{std::max(1u, NumWorkers() / 4), AllCores()} {
+-        // PERF-102: a worker for every core, the ones past NumWorkers() only for the precompile
+-        // on the splash screen (the queue's boost).
++    PipelineBuildWorkers()
++        : queue{CompileConcurrency(), std::max(1u, NumWorkers() / 4), CompileConcurrency()} {
++        // PERF-102: extra workers precompile on the splash screen (the queue's boost), but keep
++        // concurrent driver pipeline compilations bounded. Large bursts can overwhelm the driver
++        // while the game and its pipeline linker are already using the GPU.
+         for (u32 i = 0; i < AllCores(); ++i) {
+             threads.emplace_back([this](std::stop_token stop) { Work(stop); });
+         }
+@@ -273,6 +275,13 @@ private:
+         return std::clamp(cores - 2, 2u, 14u);
+     }
+ 
++    static u32 CompileConcurrency() {
++        // Keep driver pipeline creation to a small burst even on large CPUs. Four concurrent
++        // builds still use the parallel compiler without sending a dozen expensive requests to
++        // the graphics driver at once.
++        return std::clamp(AllCores() / 3, 2u, 4u);
++    }
++
+     void Work(std::stop_token stop) {
+         Common::SetCurrentThreadName("shadGT:PipelineBuild");
+         // PERF-097: driver compiles stay off the cores the game and the recorder run on.
+

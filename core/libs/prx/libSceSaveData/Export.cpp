@@ -110,8 +110,10 @@ int APS5_VABI sceSaveDataTransferringMount(const SaveDataTransferringMount* moun
 // GT Sport's boot script assumes loading outlasts the boot screen's setup: the boot screen starts
 // listening for "loading done" and only then initializes the flag that handler reads. From fast
 // storage the save data loads first, the handler sees the flag unset and the script fails
-// (ProductBootScreen.ad:99). For those titles the first mount waits until the renderer has drawn
-// the boot screen; the shadGT renderer signals this named event on its first frame with draws.
+// (ProductBootScreen.ad:99). For those titles the first save access (the search for the save,
+// before the game decides to create one) waits until the renderer has drawn the boot screen; the
+// shadGT renderer signals this named event once the game draws steadily. Waiting only at the
+// mount was not enough on a fresh save: the game's "Saving" indicator drew first.
 static void WaitForBootScreen() {
     static std::once_flag once;
     std::call_once(once, [] {
@@ -122,8 +124,10 @@ static void WaitForBootScreen() {
         char name[64];
         std::snprintf(name, sizeof(name), "Local\\RytyFirstDraw-%lu", GetCurrentProcessId());
         if (HANDLE event = CreateEventA(nullptr, TRUE, FALSE, name)) {
+            const DWORD start = GetTickCount();
             const DWORD result = WaitForSingleObject(event, 20000);
-            SAVEDATA_TRACE("waited for the boot screen before the first mount: %s", result == WAIT_OBJECT_0 ? "drawn" : "timed out");
+            SAVEDATA_TRACE("waited %lu ms for the boot screen before the first save access: %s", GetTickCount() - start,
+                           result == WAIT_OBJECT_0 ? "drawn" : "timed out");
             CloseHandle(event);
         }
 #endif
@@ -178,6 +182,7 @@ int APS5_VABI sceSaveDataRestoreBackupData(const void* restore) {
 }
 int APS5_VABI sceSaveDataDirNameSearch(const SaveDataDirNameSearchCond* cond,
                                        SaveDataDirNameSearchResult* result) {
+    WaitForBootScreen();
     const int rc = savedata::dir_name_search_internal(cond, result);
     SAVEDATA_TRACE("sceSaveDataDirNameSearch pattern=%s hits=%u -> 0x%08x",
                    cond != nullptr && cond->dir_name != nullptr ? cond->dir_name->data : "(all)",

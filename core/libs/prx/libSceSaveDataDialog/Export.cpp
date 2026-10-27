@@ -18,6 +18,10 @@ int SoftFailNp(const char* func) {
 
 extern "C" {
 
+int APS5_VABI sceSaveDataDialogGetStatus() {
+  return SoftFailNp(__func__);
+}
+
  int APS5_VABI sceSaveDataDialogClose(const void* close_param) {
   (void)close_param;
   return SoftFailNp(__func__);
@@ -65,3 +69,9 @@ extern "C" {
  }
 
 }
+
+// No-op save-data dialog compatibility exports.
+extern "C" {
+int APS5_VABI sceSaveDataDialogUpdateStatus() { return SoftFailNp(__func__); }
+}
+

@@ -1,0 +1,309 @@
+From 35fd610a70cbe246e6e0bf69fbba5867c5c0cd52 Mon Sep 17 00:00:00 2001
+From: Gabarsolon <78847479+Gabarsolon@users.noreply.github.com>
+Date: Mon, 19 Oct 2026 00:50:09 +0300
+Subject: [PATCH 19/19] fixed ghost car not being transparent
+
+used codex (gpt-6.1-sol high)
+---
+ .../spirv/emit_spirv_context_get_set.cpp       | 16 +++++++++++++---
+ .../backend/spirv/emit_spirv_special.cpp       | 17 +++++++++++++++++
+ .../backend/spirv/spirv_emit_context.cpp       | 10 ++++++----
+ .../backend/spirv/spirv_emit_context.h         |  1 +
+ src/shader_recompiler/resource.h               |  4 ++++
+ src/shader_recompiler/runtime_info.h           |  2 ++
+ .../renderer_vulkan/vk_pipeline_cache.cpp      |  2 ++
+ .../vk_pipeline_serialization.cpp              | 18 +++++++++++++++---
+ .../renderer_vulkan/vk_rasterizer.cpp          |  1 +
+ tests/test_shader_program.cpp                  | 18 ++++++++++++++++++
+ 10 files changed, 79 insertions(+), 10 deletions(-)
+
+diff --git a/src/shader_recompiler/backend/spirv/emit_spirv_context_get_set.cpp b/src/shader_recompiler/backend/spirv/emit_spirv_context_get_set.cpp
+index afedf5b6..f637b3d2 100644
+--- a/src/shader_recompiler/backend/spirv/emit_spirv_context_get_set.cpp
++++ b/src/shader_recompiler/backend/spirv/emit_spirv_context_get_set.cpp
+@@ -224,9 +224,13 @@ Id EmitGetAttributeU32(EmitContext& ctx, IR::Attribute attr, u32 comp) {
+         return ctx.OpLoad(ctx.U32[1], ctx.local_invocation_index);
+     case IR::Attribute::SampleIndex:
+         return ctx.OpLoad(ctx.U32[1], ctx.sample_index);
+-    case IR::Attribute::SampleMask:
+-        return ctx.OpLoad(ctx.U32[1],
+-                          ctx.OpAccessChain(ctx.input_u32, ctx.sample_mask_in, ctx.u32_zero_value));
++    case IR::Attribute::SampleMask: {
++        const Id mask = ctx.OpLoad(
++            ctx.U32[1], ctx.OpAccessChain(ctx.input_u32, ctx.sample_mask_in, ctx.u32_zero_value));
++        return ctx.runtime_info.hw.fs.quad_sample_mask
++                   ? ctx.OpBitwiseAnd(ctx.U32[1], mask, ctx.quad_sample_mask)
++                   : mask;
++    }
+     case IR::Attribute::RenderTargetIndex:
+         return ctx.OpLoad(ctx.U32[1], ctx.output_layer);
+     case IR::Attribute::PrimitiveId:
+@@ -320,6 +324,12 @@ void EmitSetAttribute(EmitContext& ctx, IR::Attribute attr, Id value, u32 elemen
+     case IR::Attribute::Depth:
+         return op_store(ctx.frag_depth);
+     case IR::Attribute::SampleMask:
++        if (ctx.runtime_info.hw.fs.quad_sample_mask) {
++            ctx.OpStore(ctx.OpAccessChain(ctx.output_u32, ctx.sample_mask, ctx.u32_zero_value),
++                        ctx.OpBitwiseAnd(ctx.U32[1], ctx.OpBitcast(ctx.U32[1], value),
++                                         ctx.quad_sample_mask));
++            return;
++        }
+         return op_store(ctx.OpAccessChain(ctx.output_u32, ctx.sample_mask, ctx.u32_zero_value));
+     case IR::Attribute::StencilRef:
+         if (ctx.profile.supports_shader_stencil_export) {
+diff --git a/src/shader_recompiler/backend/spirv/emit_spirv_special.cpp b/src/shader_recompiler/backend/spirv/emit_spirv_special.cpp
+index 4eae5c35..af0875c7 100644
+--- a/src/shader_recompiler/backend/spirv/emit_spirv_special.cpp
++++ b/src/shader_recompiler/backend/spirv/emit_spirv_special.cpp
+@@ -11,6 +11,23 @@ namespace Shader::Backend::SPIRV {
+ void EmitPrologue(EmitContext& ctx) {
+     if (ctx.hw_stage == HwStage::Fragment) {
+         ctx.DefineAmdPerVertexAttribs();
++        if (ctx.runtime_info.hw.fs.quad_sample_mask) {
++            const Id coordinates =
++                ctx.OpConvertFToU(ctx.U32[4], ctx.OpLoad(ctx.F32[4], ctx.frag_coord));
++            const Id x = ctx.OpBitwiseAnd(
++                ctx.U32[1], ctx.OpCompositeExtract(ctx.U32[1], coordinates, 0u), ctx.u32_one_value);
++            const Id y = ctx.OpBitwiseAnd(
++                ctx.U32[1], ctx.OpCompositeExtract(ctx.U32[1], coordinates, 1u), ctx.u32_one_value);
++            const Id row_ptr = ctx.OpAccessChain(
++                ctx.TypePointer(spv::StorageClass::PushConstant, ctx.U32[1]), ctx.push_data_block,
++                ctx.ConstU32(PushData::QuadSampleMaskIndex), y);
++            const Id row = ctx.OpLoad(ctx.U32[1], row_ptr);
++            const Id shift = ctx.OpShiftLeftLogical(ctx.U32[1], x, ctx.ConstU32(4u));
++            ctx.quad_sample_mask = ctx.OpBitwiseAnd(
++                ctx.U32[1], ctx.OpShiftRightLogical(ctx.U32[1], row, shift), ctx.ConstU32(0xffffu));
++            ctx.OpStore(ctx.OpAccessChain(ctx.output_u32, ctx.sample_mask, ctx.u32_zero_value),
++                        ctx.quad_sample_mask);
++        }
+     }
+     if (ctx.info.loads.Get(IR::Attribute::WorkgroupIndex)) {
+         ctx.DefineWorkgroupIndex();
+diff --git a/src/shader_recompiler/backend/spirv/spirv_emit_context.cpp b/src/shader_recompiler/backend/spirv/spirv_emit_context.cpp
+index 51a1cba7..c49ae0bb 100644
+--- a/src/shader_recompiler/backend/spirv/spirv_emit_context.cpp
++++ b/src/shader_recompiler/backend/spirv/spirv_emit_context.cpp
+@@ -366,7 +366,7 @@ void EmitContext::DefineInputs() {
+         break;
+     }
+     case SwStage::Fragment: {
+-        if (info.loads.GetAny(IR::Attribute::FragCoord) ||
++        if (info.loads.GetAny(IR::Attribute::FragCoord) || runtime_info.hw.fs.quad_sample_mask ||
+             (info.loads.GetAny(IR::Attribute::BaryCoordPullModel) &&
+              !profile.supports_amd_shader_explicit_vertex_parameter)) {
+             frag_coord = DefineVariable(F32[4], spv::BuiltIn::FragCoord, spv::StorageClass::Input);
+@@ -736,7 +736,7 @@ void EmitContext::DefineOutputs() {
+         if (info.stores.Get(IR::Attribute::Depth)) {
+             frag_depth = DefineVariable(F32[1], spv::BuiltIn::FragDepth, spv::StorageClass::Output);
+         }
+-        if (info.stores.Get(IR::Attribute::SampleMask)) {
++        if (info.stores.Get(IR::Attribute::SampleMask) || runtime_info.hw.fs.quad_sample_mask) {
+             sample_mask = DefineVariable(TypeArray(U32[1], u32_one_value), spv::BuiltIn::SampleMask,
+                                          spv::StorageClass::Output);
+         }
+@@ -789,8 +789,8 @@ void EmitContext::DefineOutputs() {
+ 
+ void EmitContext::DefinePushDataBlock() {
+     // Create push constants block for instance steps rates
+-    const Id struct_type{
+-        Name(TypeStruct(F32[1], F32[1], F32[1], F32[1], U32[4], U32[4], U32[2]), "AuxData")};
++    const Id struct_type{Name(
++        TypeStruct(F32[1], F32[1], F32[1], F32[1], U32[4], U32[4], U32[2], U32[2]), "AuxData")};
+     Decorate(struct_type, spv::Decoration::Block);
+     MemberName(struct_type, PushData::XOffsetIndex, "xoffset");
+     MemberName(struct_type, PushData::YOffsetIndex, "yoffset");
+@@ -799,6 +799,7 @@ void EmitContext::DefinePushDataBlock() {
+     MemberName(struct_type, PushData::BufOffsetIndex + 0, "buf_offsets0");
+     MemberName(struct_type, PushData::BufOffsetIndex + 1, "buf_offsets1");
+     MemberName(struct_type, PushData::BufOffsetIndex + 2, "buf_offsets2");
++    MemberName(struct_type, PushData::QuadSampleMaskIndex, "quad_sample_mask");
+     MemberDecorate(struct_type, PushData::XOffsetIndex, spv::Decoration::Offset, 0U);
+     MemberDecorate(struct_type, PushData::YOffsetIndex, spv::Decoration::Offset, 4U);
+     MemberDecorate(struct_type, PushData::XScaleIndex, spv::Decoration::Offset, 8U);
+@@ -806,6 +807,7 @@ void EmitContext::DefinePushDataBlock() {
+     MemberDecorate(struct_type, PushData::BufOffsetIndex + 0, spv::Decoration::Offset, 16U);
+     MemberDecorate(struct_type, PushData::BufOffsetIndex + 1, spv::Decoration::Offset, 32U);
+     MemberDecorate(struct_type, PushData::BufOffsetIndex + 2, spv::Decoration::Offset, 48U);
++    MemberDecorate(struct_type, PushData::QuadSampleMaskIndex, spv::Decoration::Offset, 56U);
+     push_data_block = DefineVar(struct_type, spv::StorageClass::PushConstant);
+     Name(push_data_block, "push_data");
+     interfaces.push_back(push_data_block);
+diff --git a/src/shader_recompiler/backend/spirv/spirv_emit_context.h b/src/shader_recompiler/backend/spirv/spirv_emit_context.h
+index 01f4a125..7cbf76d1 100644
+--- a/src/shader_recompiler/backend/spirv/spirv_emit_context.h
++++ b/src/shader_recompiler/backend/spirv/spirv_emit_context.h
+@@ -260,6 +260,7 @@ public:
+     Id frag_depth{};
+     Id stencil_ref{};
+     Id sample_mask{};
++    Id quad_sample_mask{};
+     Id sample_mask_in{};
+     Id helper_invocation{};
+     Id sample_index{};
+diff --git a/src/shader_recompiler/resource.h b/src/shader_recompiler/resource.h
+index 54cae8de..87115641 100644
+--- a/src/shader_recompiler/resource.h
++++ b/src/shader_recompiler/resource.h
+@@ -3,6 +3,7 @@
+ 
+ #pragma once
+ 
++#include <cstddef>
+ #include "common/types.h"
+ #include "shader_recompiler/ir/type.h"
+ #include "video_core/amdgpu/resource.h"
+@@ -272,18 +273,21 @@ struct PushData {
+     static constexpr u32 XScaleIndex = 2;
+     static constexpr u32 YScaleIndex = 3;
+     static constexpr u32 BufOffsetIndex = 4;
++    static constexpr u32 QuadSampleMaskIndex = 7;
+ 
+     float xoffset;
+     float yoffset;
+     float xscale;
+     float yscale;
+     std::array<u8, NUM_BUFFERS> buf_offsets;
++    std::array<u32, 2> quad_sample_mask{~0u, ~0u};
+ 
+     void AddOffset(u32 binding, u32 offset) {
+         ASSERT(offset < 256 && binding < buf_offsets.size());
+         buf_offsets[binding] = offset;
+     }
+ };
++static_assert(offsetof(PushData, quad_sample_mask) == 56 && sizeof(PushData) == 64);
+ static_assert(sizeof(PushData) <= 128,
+               "PushData size is greater than minimum size guaranteed by Vulkan spec");
+ 
+diff --git a/src/shader_recompiler/runtime_info.h b/src/shader_recompiler/runtime_info.h
+index 54f583aa..26cd921b 100644
+--- a/src/shader_recompiler/runtime_info.h
++++ b/src/shader_recompiler/runtime_info.h
+@@ -222,6 +222,7 @@ struct HwFragmentRuntimeInfo {
+     bool front_face_all_bits{false};
+     bool dual_source_blending{false};
+     bool clip_distance_emulation{false};
++    bool quad_sample_mask{false};
+ 
+     bool operator==(const HwFragmentRuntimeInfo& other) const noexcept {
+         return std::ranges::equal(color_buffers, other.color_buffers) &&
+@@ -231,6 +232,7 @@ struct HwFragmentRuntimeInfo {
+                front_face_all_bits == other.front_face_all_bits &&
+                dual_source_blending == other.dual_source_blending &&
+                clip_distance_emulation == other.clip_distance_emulation &&
++               quad_sample_mask == other.quad_sample_mask &&
+                std::ranges::equal(inputs.begin(), inputs.begin() + num_inputs, other.inputs.begin(),
+                                   other.inputs.begin() + num_inputs);
+     }
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+index 4781d106..38b969a1 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+@@ -490,6 +490,8 @@ const Shader::RuntimeInfo& PipelineCache::BuildRuntimeInfo(HwStage stage, SwStag
+         info.hw.fs.addr_flags = regs.ps_input_addr;
+         info.hw.fs.num_inputs = regs.num_interp;
+         info.hw.fs.front_face_all_bits = regs.barycentric_control.front_face_all_bits;
++        info.hw.fs.quad_sample_mask =
++            regs.reg_array[0xa30e] != ~0u || regs.reg_array[0xa30f] != ~0u;
+         info.hw.fs.num_samples =
+             regs.ps_input_addr.sample_coverage_ena && regs.ps_input_ena.sample_coverage_ena
+                 ? regs.aa_config.NumSamples()
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_serialization.cpp b/src/video_core/renderer_vulkan/vk_pipeline_serialization.cpp
+index c03b9d80..a415e07d 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_serialization.cpp
++++ b/src/video_core/renderer_vulkan/vk_pipeline_serialization.cpp
+@@ -16,6 +16,9 @@ namespace Serialization {
+ // Synthetic dual-source exports change the fragment shader interface. Version 13 adds the
+ // general swizzled factor blend, which also changes the runtime color-buffer layout.
+ static constexpr u32 ShaderBinaryVersion = 15u;
++static constexpr u32 ShaderBinaryVersionQuadSampleMask = 16u;
++static_assert(sizeof(Shader::HwFragmentRuntimeInfo) == 248 && sizeof(Shader::RuntimeInfo) == 312,
++              "Legacy metadata compatibility requires the runtime-info layout to stay unchanged");
+ // Stored output metadata and runtime color-buffer flags include swizzled-alpha emulation.
+ // Version 13: stored SRT walker code also records flattened source addresses.
+ // Version 14: stored specializations no longer include compile-time runtime-info changes.
+@@ -90,7 +93,8 @@ bool PeekShaderMeta(std::vector<u8>&& blob, u64& pgm_hash, size_t& perm_idx) {
+     }
+     u32 binary_version{};
+     meta.Read(binary_version);
+-    if (binary_version != Serialization::ShaderBinaryVersion) {
++    if (binary_version != Serialization::ShaderBinaryVersion &&
++        binary_version != Serialization::ShaderBinaryVersionQuadSampleMask) {
+         return false;
+     }
+     u64 perm_hash{};
+@@ -137,7 +141,10 @@ void RegisterShaderMeta(const Shader::Info& info,
+     Serialization::Writer meta{ar};
+ 
+     meta.Write(Serialization::ShaderMetaVersion);
+-    meta.Write(Serialization::ShaderBinaryVersion);
++    const bool masked_fragment = spec.runtime_info.hw_stage == Shader::HwStage::Fragment &&
++                                 spec.runtime_info.hw.fs.quad_sample_mask;
++    meta.Write(masked_fragment ? Serialization::ShaderBinaryVersionQuadSampleMask
++                               : Serialization::ShaderBinaryVersion);
+ 
+     meta.Write(perm_hash);
+     meta.Write(perm_idx);
+@@ -174,7 +181,8 @@ bool LoadShaderMeta(Serialization::Archive& ar, Shader::Info& info,
+ 
+     u32 binary_version{};
+     meta.Read(binary_version);
+-    if (binary_version != Serialization::ShaderBinaryVersion) {
++    if (binary_version != Serialization::ShaderBinaryVersion &&
++        binary_version != Serialization::ShaderBinaryVersionQuadSampleMask) {
+         return false;
+     }
+ 
+@@ -183,6 +191,10 @@ bool LoadShaderMeta(Serialization::Archive& ar, Shader::Info& info,
+     meta.Read(perm_idx);
+ 
+     spec.Deserialize(ar);
++    if (binary_version == Serialization::ShaderBinaryVersion &&
++        spec.runtime_info.hw_stage == Shader::HwStage::Fragment) {
++        spec.runtime_info.hw.fs.quad_sample_mask = false;
++    }
+     info.Deserialize(ar, perm_hash_ar,
+                      meta_version != Serialization::ShaderMetaVersionWithoutAttributeFlags);
+     info.resource_usage_known = false;
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+index b301a23d..3e6e02cc 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -50,6 +50,7 @@ static Shader::PushData MakeUserData(const AmdGpu::Regs& regs) {
+     push_data.xscale = regs.viewport_control.xscale_enable ? regs.viewports[0].xscale : 1.f;
+     push_data.yoffset = regs.viewport_control.yoffset_enable ? regs.viewports[0].yoffset : 0.f;
+     push_data.yscale = regs.viewport_control.yscale_enable ? regs.viewports[0].yscale : 1.f;
++    push_data.quad_sample_mask = {regs.reg_array[0xa30e], regs.reg_array[0xa30f]};
+     return push_data;
+ }
+ 
+diff --git a/tests/test_shader_program.cpp b/tests/test_shader_program.cpp
+index 2a255c1f..6a502380 100644
+--- a/tests/test_shader_program.cpp
++++ b/tests/test_shader_program.cpp
+@@ -64,6 +64,24 @@ TEST(ShaderProgram, KeepsDistinctResourceLayoutsAndStableMetadataForPermutations
+     EXPECT_EQ(flatbuf_end.buffer, 1);
+ }
+ 
++TEST(ShaderProgram, DoesNotReuseOpaqueShaderPermutationForQuadMaskedDraw) {
++    Vulkan::Program program;
++    auto opaque = MakeFragmentInfo(false);
++    auto opaque_spec = MakeSpec(*opaque);
++    program.AddPermut({}, std::move(opaque_spec), std::move(opaque));
++
++    auto masked = MakeFragmentInfo(false);
++    auto masked_spec = MakeSpec(*masked);
++    masked_spec.runtime_info.hw.fs.quad_sample_mask = true;
++    EXPECT_FALSE(program.modules[0].spec == masked_spec);
++    program.AddPermut({}, std::move(masked_spec), std::move(masked));
++
++    auto next_draw = MakeSpec(*program.modules[1].info);
++    next_draw.runtime_info.hw.fs.quad_sample_mask = true;
++    EXPECT_FALSE(program.modules[0].spec == next_draw);
++    EXPECT_TRUE(program.modules[1].spec == next_draw);
++}
++
+ TEST(ShaderProgram, RetainsEachPreloadedPermutationsMetadataAtItsOriginalIndex) {
+     Vulkan::Program program;
+     auto flatbuf = MakeFragmentInfo(true);
+-- 
+2.55.0.windows.3

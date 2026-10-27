@@ -2,6 +2,7 @@
 #include "prx/libScePad/include/Pad.hpp"
 #include "prx/libkernel/Time/include/Time.hpp"
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <mutex>
@@ -9,19 +10,30 @@
 
 namespace {
     std::mutex stateMutex;
-    PadInputState state;
-    PadOutputState output;
-    std::uint64_t timestamp = 0;
     std::exception_ptr failure;
     bool initialized = false;
+    // Players 1-4 (slot 0 is player 1, always connected; the others while a controller is).
+    std::atomic<std::uint32_t> connectedSlots{1};
 
     struct Quat { float w = 1.0f, x = 0.0f, y = 0.0f, z = 0.0f; };
-    Quat orientation;
-    std::uint64_t lastFuseTime = 0;
-    float biasIntegral[3] = {0.0f, 0.0f, 0.0f};
-    std::uint8_t nextTouchId = 0;
-    bool prevTouchActive[2] = {false, false};
-    std::uint8_t touchIds[2] = {0, 0};
+
+    struct Slot {
+        PadInputState state;
+        PadOutputState output;
+        std::uint64_t timestamp = 0;
+        Quat orientation;
+        std::uint64_t lastFuseTime = 0;
+        float biasIntegral[3] = {0.0f, 0.0f, 0.0f};
+        std::uint8_t nextTouchId = 0;
+        bool prevTouchActive[2] = {false, false};
+        std::uint8_t touchIds[2] = {0, 0};
+    };
+    Slot slots[PAD_MAX_PLAYERS];
+
+    Slot& slotAt(int slot) {
+        if (slot < 0 || slot >= PAD_MAX_PLAYERS) throw std::out_of_range("Pad: player slot out of range");
+        return slots[slot];
+    }
 
     void normalize(Quat& q) {
         const float n = std::sqrt(q.w * q.w + q.x * q.x + q.y * q.y + q.z * q.z);
@@ -29,7 +41,9 @@ namespace {
         q.w /= n; q.x /= n; q.y /= n; q.z /= n;
     }
 
-    void fuse(float dt, const std::array<float, 3>& accel, const std::array<float, 3>& gyro) {
+    void fuse(Slot& p, float dt, const std::array<float, 3>& accel, const std::array<float, 3>& gyro) {
+        Quat& orientation = p.orientation;
+        float* biasIntegral = p.biasIntegral;
         float gx = gyro[0], gy = gyro[1], gz = gyro[2];
         const float an = std::sqrt(accel[0] * accel[0] + accel[1] * accel[1] + accel[2] * accel[2]);
         if (an > 1.0f) {
@@ -87,37 +101,61 @@ namespace {
 }
 
 void Pad::Initialize() {
+    StartWheel();
     std::lock_guard lock(stateMutex);
     if (failure) std::rethrow_exception(failure);
     if (!initialized) {
-        timestamp = sceKernelGetProcessTime();
-        lastFuseTime = timestamp;
+        const std::uint64_t now = sceKernelGetProcessTime();
+        for (Slot& p : slots) {
+            p.timestamp = now;
+            p.lastFuseTime = now;
+        }
     }
     initialized = true;
 }
 
-PadData Pad::ReadState() {
+PadData Pad::ReadState(int slot) {
     std::lock_guard lock(stateMutex);
+    Slot& p = slotAt(slot);
+    PadInputState& state = p.state;
+    PadOutputState& output = p.output;
+    Quat& orientation = p.orientation;
+    std::uint64_t& lastFuseTime = p.lastFuseTime;
+    float* biasIntegral = p.biasIntegral;
+    std::uint8_t& nextTouchId = p.nextTouchId;
+    bool* prevTouchActive = p.prevTouchActive;
+    std::uint8_t* touchIds = p.touchIds;
     if (failure) std::rethrow_exception(failure);
     if (!initialized) throw std::runtime_error("Pad: read before initialization");
+    PadInputState current = state;
     const std::uint64_t now = sceKernelGetProcessTime();
+    if (slot == 0) {
+        // A wheel belongs to player 1; its buttons moving on their own are new input too.
+        ApplyWheel(current);
+        static PadInputState lastRead;
+        if (current.buttons != lastRead.buttons || current.sticks != lastRead.sticks ||
+            current.analogButtonsL2 != lastRead.analogButtonsL2 || current.analogButtonsR2 != lastRead.analogButtonsR2) {
+            p.timestamp = std::max(p.timestamp, now);
+        }
+        lastRead = current;
+    }
     PadData data{};
-    data.buttons = state.buttons;
-    data.left_stick_x = state.sticks[0];
-    data.left_stick_y = state.sticks[1];
-    data.right_stick_x = state.sticks[2];
-    data.right_stick_y = state.sticks[3];
-    data.analog_buttons_l2 = state.analogButtonsL2 != 0 ? state.analogButtonsL2 : static_cast<std::uint8_t>((state.buttons & 0x100) != 0 ? 255 : 0);
-    data.analog_buttons_r2 = state.analogButtonsR2 != 0 ? state.analogButtonsR2 : static_cast<std::uint8_t>((state.buttons & 0x200) != 0 ? 255 : 0);
+    data.buttons = current.buttons;
+    data.left_stick_x = current.sticks[0];
+    data.left_stick_y = current.sticks[1];
+    data.right_stick_x = current.sticks[2];
+    data.right_stick_y = current.sticks[3];
+    data.analog_buttons_l2 = current.analogButtonsL2 != 0 ? current.analogButtonsL2 : static_cast<std::uint8_t>((current.buttons & 0x100) != 0 ? 255 : 0);
+    data.analog_buttons_r2 = current.analogButtonsR2 != 0 ? current.analogButtonsR2 : static_cast<std::uint8_t>((current.buttons & 0x200) != 0 ? 255 : 0);
 
-    const bool live = state.hasMotion && output.motionEnabled;
+    const bool live = current.hasMotion && output.motionEnabled;
     const std::array<float, 3> rest{0.0f, 9.80665f, 0.0f};
-    const std::array<float, 3>& accel = live ? state.accel : rest;
-    const std::array<float, 3> gyro = live ? state.gyro : std::array<float, 3>{0.0f, 0.0f, 0.0f};
+    const std::array<float, 3>& accel = live ? current.accel : rest;
+    const std::array<float, 3> gyro = live ? current.gyro : std::array<float, 3>{0.0f, 0.0f, 0.0f};
     if (live) {
         float dt = lastFuseTime != 0 && now > lastFuseTime ? static_cast<float>(now - lastFuseTime) * 1e-6f : 0.0f;
         dt = std::min(dt, 0.1f);
-        fuse(dt, accel, gyro);
+        fuse(p, dt, accel, gyro);
     } else {
         orientation = Quat{};
         biasIntegral[0] = biasIntegral[1] = biasIntegral[2] = 0.0f;
@@ -135,13 +173,13 @@ PadData Pad::ReadState() {
     data.angular_velocity_y = gyro[1];
     data.angular_velocity_z = gyro[2];
 
-    data.connected = true;
+    data.connected = Pad::Connected(slot);
     data.connected_count = 1;
-    data.timestamp = timestamp;
+    data.timestamp = p.timestamp;
 
     std::uint8_t touchNum = 0;
     for (int i = 0; i < 2; ++i) {
-        const PadTouchPoint& tp = state.touch[i];
+        const PadTouchPoint& tp = current.touch[i];
         if (!tp.active) { prevTouchActive[i] = false; continue; }
         if (!prevTouchActive[i]) touchIds[i] = static_cast<std::uint8_t>(nextTouchId++ & 0x7F);
         prevTouchActive[i] = true;
@@ -152,10 +190,10 @@ PadData Pad::ReadState() {
         }
         ++touchNum;
     }
-    if (touchNum == 0 && (state.touchLeft || state.touchRight)) {
+    if (touchNum == 0 && (current.touchLeft || current.touchRight)) {
         data.buttons |= 0x100000;
         touchNum = 1;
-        data.touch_data_touch0_x = state.touchRight ? 1440 : 480;
+        data.touch_data_touch0_x = current.touchRight ? 1440 : 480;
         data.touch_data_touch0_y = 471;
         data.touch_data_touch0_id = 0;
     }
@@ -163,23 +201,32 @@ PadData Pad::ReadState() {
     return data;
 }
 
-void Pad::SetVibration(std::uint8_t large, std::uint8_t small) {
+void Pad::SetVibration(int slot, std::uint8_t large, std::uint8_t small) {
     std::lock_guard lock(stateMutex);
+    Slot& p = slotAt(slot);
+    PadInputState& state = p.state;
+    PadOutputState& output = p.output;
     if (output.vibrationLarge == large && output.vibrationSmall == small) return;
     output.vibrationLarge = large;
     output.vibrationSmall = small;
     ++output.sequence;
 }
 
-void Pad::SetVibrationMode(int mode) {
+void Pad::SetVibrationMode(int slot, int mode) {
     std::lock_guard lock(stateMutex);
+    Slot& p = slotAt(slot);
+    PadInputState& state = p.state;
+    PadOutputState& output = p.output;
     if (output.vibrationMode == mode) return;
     output.vibrationMode = mode;
     ++output.sequence;
 }
 
-void Pad::SetLightBar(bool valid, std::uint8_t r, std::uint8_t g, std::uint8_t b) {
+void Pad::SetLightBar(int slot, bool valid, std::uint8_t r, std::uint8_t g, std::uint8_t b) {
     std::lock_guard lock(stateMutex);
+    Slot& p = slotAt(slot);
+    PadInputState& state = p.state;
+    PadOutputState& output = p.output;
     output.lightBarValid = valid;
     output.lightBar[0] = r;
     output.lightBar[1] = g;
@@ -187,7 +234,7 @@ void Pad::SetLightBar(bool valid, std::uint8_t r, std::uint8_t g, std::uint8_t b
     ++output.sequence;
 }
 
-void Pad::SetTriggerCommand(int trigger, const std::uint8_t* command) {
+void Pad::SetTriggerCommand(int slot, int trigger, const std::uint8_t* command) {
     if (trigger < 0 || trigger > 1 || command == nullptr) return;
     std::uint32_t mode = 0;
     std::memcpy(&mode, command, 4);
@@ -245,34 +292,54 @@ void Pad::SetTriggerCommand(int trigger, const std::uint8_t* command) {
     req.valid = req.effect[0] != 0x05;
     if (!req.valid) req.fallback = 0;
     std::lock_guard lock(stateMutex);
+    PadOutputState& output = slotAt(slot).output;
     output.trigger[trigger] = req;
     output.triggerTouched = true;
     ++output.sequence;
 }
 
-void Pad::ResetOrientation() {
+void Pad::ResetOrientation(int slot) {
     std::lock_guard lock(stateMutex);
-    orientation = Quat{};
-    biasIntegral[0] = biasIntegral[1] = biasIntegral[2] = 0.0f;
+    Slot& p = slotAt(slot);
+    p.orientation = Quat{};
+    p.biasIntegral[0] = p.biasIntegral[1] = p.biasIntegral[2] = 0.0f;
 }
 
-void Pad::SetMotionEnabled(bool enabled) {
+void Pad::SetMotionEnabled(int slot, bool enabled) {
     std::lock_guard lock(stateMutex);
+    Slot& p = slotAt(slot);
+    PadInputState& state = p.state;
+    PadOutputState& output = p.output;
     if (output.motionEnabled == enabled) return;
     output.motionEnabled = enabled;
     ++output.sequence;
 }
 
-extern "C" void PadPublishInput_nid_postfix(const PadInputState& input) {
+bool Pad::Connected(int slot) {
+    return slot >= 0 && slot < PAD_MAX_PLAYERS && (connectedSlots.load() >> slot & 1u) != 0;
+}
+
+extern "C" void PadPublishInputSlot_nid_postfix(int slot, const PadInputState& input) {
     std::lock_guard lock(stateMutex);
     if (failure) std::rethrow_exception(failure);
+    Slot& p = slotAt(slot);
+    PadInputState& state = p.state;
     if (state.buttons == input.buttons && state.sticks == input.sticks &&
         state.analogButtonsL2 == input.analogButtonsL2 && state.analogButtonsR2 == input.analogButtonsR2 &&
         state.touchLeft == input.touchLeft && state.touchRight == input.touchRight &&
         state.hasMotion == input.hasMotion && state.accel == input.accel && state.gyro == input.gyro &&
         state.touch == input.touch && state.deviceKind == input.deviceKind) return;
     state = input;
-    timestamp = sceKernelGetProcessTime();
+    p.timestamp = sceKernelGetProcessTime();
+}
+
+extern "C" void PadPublishInput_nid_postfix(const PadInputState& input) {
+    PadPublishInputSlot_nid_postfix(0, input);
+}
+
+// Which players have a controller (bit N = player N+1); player 1 is always connected.
+extern "C" void PadSetConnectedSlots_nid_postfix(std::uint32_t mask) {
+    connectedSlots.store((mask | 1u) & ((1u << PAD_ACTIVE_PLAYERS) - 1u));
 }
 
 extern "C" void PadReportInputFailure_nid_postfix(std::exception_ptr error) {
@@ -281,10 +348,15 @@ extern "C" void PadReportInputFailure_nid_postfix(std::exception_ptr error) {
     if (!failure) failure = error;
 }
 
-extern "C" bool PadFetchOutput_nid_postfix(std::uint32_t* seenSequence, PadOutputState* out) {
+extern "C" bool PadFetchOutputSlot_nid_postfix(int slot, std::uint32_t* seenSequence, PadOutputState* out) {
     std::lock_guard lock(stateMutex);
+    PadOutputState& output = slotAt(slot).output;
     if (seenSequence == nullptr || out == nullptr || *seenSequence == output.sequence) return false;
     *seenSequence = output.sequence;
     *out = output;
     return true;
+}
+
+extern "C" bool PadFetchOutput_nid_postfix(std::uint32_t* seenSequence, PadOutputState* out) {
+    return PadFetchOutputSlot_nid_postfix(0, seenSequence, out);
 }

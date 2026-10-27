@@ -303,6 +303,10 @@ static Port* getPort(int handle) {
 
 extern "C" {
 
+int APS5_VABI sceAudioOutDeviceIdOpen() {
+    return 0;
+}
+
 int APS5_VABI sceAudioOutInit() {
     return 0;
 }

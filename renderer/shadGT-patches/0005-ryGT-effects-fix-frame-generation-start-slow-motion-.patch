@@ -1,0 +1,827 @@
+From d9df4ce86308688ab6da797d0a59b1acb659f4bc Mon Sep 17 00:00:00 2001
+From: mlgprorektm8 <67933lance@gmail.com>
+Date: Wed, 14 Oct 2026 15:18:43 -0500
+Subject: [PATCH] ryGT: effects fix, frame generation start, slow-motion
+ compiles, diagnostics
+
+- FIX-103: compute "metadata clears" run when the memory they write holds a
+  picture. GT Sport reuses a fast-clear mask's memory for effect pictures;
+  skipping the game's clear left a 16 KB block of stale data that showed as
+  pink and black rectangles over dust, smoke and rain.
+- FIX-101: V_MAD_LEGACY_F32/V_MAC_LEGACY_F32 follow DX9 rules (0 * x = 0).
+- FIX-102: frame generation starts after the splash screen (its presenter
+  deadlocked with the window inside the NVIDIA driver during the precompile);
+  the swapchain switch waits for the graphics queue.
+- PERF-103: compile_mode setting (pause, slow motion, keep going); slow motion
+  for every compile.
+- DIAG-100/103: thread stacks when a pipeline build or the GPU is stuck.
+- DIAG-104/105: frame capture (SHADGT_DIAG_HISTORY=1), auto-triggered by the
+  pink rectangles; clear logging.
+- Presenter: last-frame reuse fixes; test script steering (steerN).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ ryty_gpu/ryty_entry.cpp                       |   2 +-
+ ryty_gpu/ryty_input_bridge.cpp                |   9 ++
+ src/core/emulator_settings.h                  |  10 +-
+ .../frontend/translate/translate.h            |   3 +
+ .../frontend/translate/vector_alu.cpp         |  28 +++-
+ src/shader_recompiler/recompiler.cpp          |  16 +++
+ src/shader_recompiler/recompiler.h            |   4 +
+ .../renderer_vulkan/vk_graphics_pipeline.cpp  |  50 +++++++
+ .../renderer_vulkan/vk_pipeline_cache.cpp     |  56 +++++++-
+ .../renderer_vulkan/vk_pipeline_cache.h       |   2 +
+ .../renderer_vulkan/vk_presenter.cpp          |  10 ++
+ .../renderer_vulkan/vk_rasterizer.cpp         | 125 +++++++++++++++++-
+ .../renderer_vulkan/vk_scheduler.cpp          |  14 ++
+ src/video_core/renderer_vulkan/vk_scheduler.h |   3 +
+ .../renderer_vulkan/vk_swapchain.cpp          |  17 ++-
+ src/video_core/renderer_vulkan/vk_swapchain.h |   6 +
+ .../texture_cache/texture_cache.cpp           |  38 +++++-
+ src/video_core/texture_cache/texture_cache.h  |   4 +
+ 18 files changed, 387 insertions(+), 10 deletions(-)
+
+diff --git a/ryty_gpu/ryty_entry.cpp b/ryty_gpu/ryty_entry.cpp
+index 06abd022..83caf56f 100644
+--- a/ryty_gpu/ryty_entry.cpp
++++ b/ryty_gpu/ryty_entry.cpp
+@@ -181,7 +181,7 @@ void DrawCompileNotice() {
+     static Clock::time_point paused_since{};
+     static Clock::time_point last_paused{};
+     const auto now = Clock::now();
+-    if (Common::GuestClock::IsPaused()) {
++    if (Common::GuestClock::IsPaused() || Vulkan::CompileSlowMotion()) {
+         if (paused_since == Clock::time_point{} || now - last_paused > std::chrono::milliseconds{300}) {
+             paused_since = now;
+         }
+diff --git a/ryty_gpu/ryty_input_bridge.cpp b/ryty_gpu/ryty_input_bridge.cpp
+index 3c2623f4..b44984c0 100644
+--- a/ryty_gpu/ryty_input_bridge.cpp
++++ b/ryty_gpu/ryty_input_bridge.cpp
+@@ -70,6 +70,9 @@ struct RytyPadOutputState {
+ // "r2on"/"r2off" hold the accelerator (R2, fully pressed) until released.
+ std::atomic<std::uint32_t> g_scripted_buttons{0};
+ std::atomic<bool> g_scripted_r2{false};
++// "steerN" holds the left stick's X axis at N (0 full left, 128 centre, 255 full right) until
++// "steeroff".
++std::atomic<int> g_scripted_lx{-1};
+ 
+ std::uint32_t ButtonFromName(std::string_view name) {
+     using B = Libraries::Pad::OrbisPadButtonDataOffset;
+@@ -98,6 +101,9 @@ void RunTestScript(std::string script) {
+         if (action == "r2on" || action == "r2off") {
+             g_scripted_r2 = action == "r2on";
+             LOG_INFO(Input, "Ryty test script: {} at {} s", action, at);
++        } else if (action.starts_with("steer")) {
++            g_scripted_lx = action == "steeroff" ? -1 : std::stoi(action.substr(5));
++            LOG_INFO(Input, "Ryty test script: {} at {} s", action, at);
+         } else if (action == "shot") {
+             VideoCore::RequestScreenshot(VideoCore::ScreenshotRequest::GameOnly);
+             LOG_INFO(Input, "Ryty test script: screenshot at {} s", at);
+@@ -180,6 +186,9 @@ void ForwardInput() {
+                         ClampAxis(state.axes[3])};
+         input.analogButtonsL2 = ClampAxis(state.axes[4]);
+         input.analogButtonsR2 = ClampAxis(state.axes[5]);
++        if (const int lx = g_scripted_lx.load(); lx >= 0) {
++            input.sticks[0] = static_cast<std::uint8_t>(lx);
++        }
+         if (g_scripted_r2) {
+             input.buttons |= static_cast<std::uint32_t>(Libraries::Pad::OrbisPadButtonDataOffset::R2);
+             input.analogButtonsR2 = 255;
+diff --git a/src/core/emulator_settings.h b/src/core/emulator_settings.h
+index 77695292..bfdf58cb 100644
+--- a/src/core/emulator_settings.h
++++ b/src/core/emulator_settings.h
+@@ -432,6 +432,11 @@ struct GPUSettings {
+     // ryGT: with compile_freeze, how long a pause may go on building the upcoming draws'
+     // pipelines too (0 off; launcher: Off 0, Short 100, Medium 300, Long 1000) (PERF-101).
+     Setting<int> compile_batch_ms{0};
++    // ryGT: when a new pipeline compiles during play (PERF-103): 0 the game pauses until it is
++    // compiled, 1 short compiles pause and long ones (over 100 ms) continue in slow motion with
++    // the objects that need them missing until they are compiled, 2 the game keeps going at
++    // full speed with those objects missing.
++    Setting<int> compile_mode{1};
+     // ryGT: CPU accesses keep fresh GPU results (FIX-076), which GT Sport's sparks and tire smoke
+     // need; costs frames in races, so it can be turned off.
+     Setting<bool> particle_effects{true};
+@@ -457,6 +462,7 @@ struct GPUSettings {
+             make_override<GPUSettings>("precompile_shaders", &GPUSettings::precompile_shaders),
+             make_override<GPUSettings>("compile_freeze", &GPUSettings::compile_freeze),
+             make_override<GPUSettings>("compile_batch_ms", &GPUSettings::compile_batch_ms),
++            make_override<GPUSettings>("compile_mode", &GPUSettings::compile_mode),
+             make_override<GPUSettings>("particle_effects", &GPUSettings::particle_effects),
+             make_override<GPUSettings>("dump_shaders", &GPUSettings::dump_shaders),
+             make_override<GPUSettings>("patch_shaders", &GPUSettings::patch_shaders),
+@@ -478,7 +484,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(GPUSettings, window_width, window_height, int
+                                    vblank_frequency, full_screen, full_screen_mode, present_mode,
+                                    hdr_allowed, fsr_enabled, rcas_enabled, rcas_attenuation,
+                                    dlss_enabled, fsr3_enabled, framegen_enabled, precompile_shaders,
+-                                   compile_freeze, compile_batch_ms, particle_effects,
++                                   compile_freeze, compile_batch_ms, compile_mode,
++                                   particle_effects,
+                                    userfaultfd, inline_fetch_shader)
+ 
+ // -------------------------------
+@@ -749,6 +756,7 @@ public:
+     SETTING_FORWARD_BOOL(m_gpu, PrecompileShaders, precompile_shaders)
+     SETTING_FORWARD_BOOL(m_gpu, CompileFreeze, compile_freeze)
+     SETTING_FORWARD(m_gpu, CompileBatchMs, compile_batch_ms)
++    SETTING_FORWARD(m_gpu, CompileMode, compile_mode)
+     SETTING_FORWARD_BOOL(m_gpu, ParticleEffects, particle_effects)
+     SETTING_FORWARD(m_gpu, ReadbacksMode, readbacks_mode)
+     SETTING_FORWARD_BOOL(m_gpu, ReadbackLinearImagesEnabled, readback_linear_images_enabled)
+diff --git a/src/shader_recompiler/frontend/translate/translate.h b/src/shader_recompiler/frontend/translate/translate.h
+index 9d499932..1cef31dc 100644
+--- a/src/shader_recompiler/frontend/translate/translate.h
++++ b/src/shader_recompiler/frontend/translate/translate.h
+@@ -162,6 +162,9 @@ public:
+     void V_SUBREV_F32(const GcnInst& inst);
+     void V_MUL_F32(const GcnInst& inst);
+     void V_MUL_LEGACY_F32(const GcnInst& inst);
++    IR::F32 LegacyMul(const IR::F32& src0, const IR::F32& src1);
++    void V_MAC_LEGACY_F32(const GcnInst& inst);
++    void V_MAD_LEGACY_F32(const GcnInst& inst);
+     void V_MUL_I32_I24(const GcnInst& inst, bool is_signed);
+     void V_MIN_F32(const GcnInst& inst, bool is_legacy = false);
+     void V_MAX_F32(const GcnInst& inst, bool is_legacy = false);
+diff --git a/src/shader_recompiler/frontend/translate/vector_alu.cpp b/src/shader_recompiler/frontend/translate/vector_alu.cpp
+index 479646b4..4c4b15d0 100644
+--- a/src/shader_recompiler/frontend/translate/vector_alu.cpp
++++ b/src/shader_recompiler/frontend/translate/vector_alu.cpp
+@@ -24,7 +24,7 @@ void Translator::EmitVectorAlu(const GcnInst& inst) {
+     case Opcode::V_SUBREV_F32:
+         return V_SUBREV_F32(inst);
+     case Opcode::V_MAC_LEGACY_F32:
+-        return V_MAC_F32(inst);
++        return V_MAC_LEGACY_F32(inst);
+     case Opcode::V_MUL_LEGACY_F32:
+         return V_MUL_LEGACY_F32(inst);
+     case Opcode::V_MUL_F32:
+@@ -416,7 +416,7 @@ void Translator::EmitVectorAlu(const GcnInst& inst) {
+ 
+         // VOP3a
+     case Opcode::V_MAD_LEGACY_F32:
+-        return V_MAD_F32(inst);
++        return V_MAD_LEGACY_F32(inst);
+     case Opcode::V_MAD_F32:
+         return V_MAD_F32(inst);
+     case Opcode::V_MAD_I32_I24:
+@@ -620,6 +620,30 @@ void Translator::V_MUL_LEGACY_F32(const GcnInst& inst) {
+     SetDst(inst.dst[0], IR::F32{ir.Select(either_zero, zero, ir.FPMul(src0, src1))});
+ }
+ 
++// FIX-101: the multiply of V_MAD_LEGACY_F32/V_MAC_LEGACY_F32 follows DX9 rules like
++// V_MUL_LEGACY_F32: 0 times anything (Inf and NaN too) is 0. With an IEEE multiply, 0 * Inf made
++// NaN, and GT Sport's dust, smoke and rain filled whole sprites with magenta or black.
++IR::F32 Translator::LegacyMul(const IR::F32& src0, const IR::F32& src1) {
++    const IR::F32 zero{ir.Imm32(0.0f)};
++    const IR::U1 either_zero{
++        ir.LogicalOr(ir.FPEqual(src0, zero), ir.FPEqual(src1, zero))};
++    return IR::F32{ir.Select(either_zero, zero, ir.FPMul(src0, src1))};
++}
++
++void Translator::V_MAC_LEGACY_F32(const GcnInst& inst) {
++    const auto src0 = GetSrc<IR::F32>(inst.src[0]);
++    const auto src1 = GetSrc<IR::F32>(inst.src[1]);
++    const auto dst0 = GetSrc<IR::F32>(inst.dst[0]);
++    SetDst(inst.dst[0], ir.FPAdd(LegacyMul(src0, src1), dst0));
++}
++
++void Translator::V_MAD_LEGACY_F32(const GcnInst& inst) {
++    const IR::F32 src0{GetSrc<IR::F32>(inst.src[0])};
++    const IR::F32 src1{GetSrc<IR::F32>(inst.src[1])};
++    const IR::F32 src2{GetSrc<IR::F32>(inst.src[2])};
++    SetDst(inst.dst[0], ir.FPAdd(LegacyMul(src0, src1), src2));
++}
++
+ void Translator::V_MUL_I32_I24(const GcnInst& inst, bool is_signed) {
+     const IR::U32 src0{
+         ir.BitFieldExtract(GetSrc(inst.src[0]), ir.Imm32(0), ir.Imm32(24), is_signed)};
+diff --git a/src/shader_recompiler/recompiler.cpp b/src/shader_recompiler/recompiler.cpp
+index 5f4521f7..b6347fc7 100644
+--- a/src/shader_recompiler/recompiler.cpp
++++ b/src/shader_recompiler/recompiler.cpp
+@@ -133,6 +133,22 @@ bool HasLaneReadsAndLoop(std::span<const u32> code) {
+     return lane_reads && loop;
+ }
+ 
++bool HasLegacyMad(std::span<const u32> code) {
++    using namespace Gcn;
++    Gcn::GcnCodeSlice slice(code.data(), code.data() + code.size());
++    Gcn::GcnDecodeContext decoder;
++    while (!slice.atEnd()) {
++        const GcnInst inst = decoder.decodeInstruction(slice);
++        if (inst.opcode == Opcode::V_MAD_LEGACY_F32 || inst.opcode == Opcode::V_MAC_LEGACY_F32) {
++            return true;
++        }
++        if (inst.opcode == Opcode::S_ENDPGM) {
++            break;
++        }
++    }
++    return false;
++}
++
+ bool HasEmptyScopeBeforeElse(std::span<const u32> code) {
+     using namespace Gcn;
+     Gcn::GcnCodeSlice slice(code.data(), code.data() + code.size());
+diff --git a/src/shader_recompiler/recompiler.h b/src/shader_recompiler/recompiler.h
+index 9eb9ebe3..52b7fcf5 100644
+--- a/src/shader_recompiler/recompiler.h
++++ b/src/shader_recompiler/recompiler.h
+@@ -39,6 +39,10 @@ struct Pools {
+ /// in compute shaders with more than 32 invocations per workgroup.
+ [[nodiscard]] bool HasLaneReadsAndLoop(std::span<const u32> code);
+ 
++/// FIX-101: true when the code uses V_MAD_LEGACY_F32 or V_MAC_LEGACY_F32, whose translations
++/// before FIX-101 made NaN from 0 * Inf.
++[[nodiscard]] bool HasLegacyMad(std::span<const u32> code);
++
+ /// DIAG-031: a readable listing of GCN code (pc, opcode, operands, memory offsets).
+ [[nodiscard]] std::string ListGcnCode(std::span<const u32> code);
+ 
+diff --git a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+index 8785851b..11a0694e 100644
+--- a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
++++ b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+@@ -3,6 +3,7 @@
+ 
+ #include <atomic>
+ #include <algorithm>
++#include <filesystem>
+ #include <chrono>
+ #include <condition_variable>
+ #include <deque>
+@@ -36,6 +37,44 @@
+ 
+ namespace Vulkan {
+ 
++#ifdef _WIN32
++// DIAG-100: every thread's stack to user\log\<file_name> (tools\stackdump.exe next to
++// GTSport.exe), for a build or the GPU stuck for long.
++void DumpThreadStacks(const wchar_t* file_name) {
++    wchar_t exe[MAX_PATH] = {};
++    GetModuleFileNameW(nullptr, exe, MAX_PATH);
++    const std::filesystem::path dir = std::filesystem::path{exe}.parent_path();
++    const auto tool = dir / "tools" / "stackdump.exe";
++    if (!std::filesystem::exists(tool)) {
++        return;
++    }
++    const auto out = dir / "user" / "log" / file_name;
++    std::wstring command =
++        L"\"" + tool.wstring() + L"\" " + std::to_wstring(GetCurrentProcessId()) + L" 512";
++    SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
++    HANDLE file = CreateFileW(out.c_str(), GENERIC_WRITE, FILE_SHARE_READ, &sa, CREATE_ALWAYS,
++                              FILE_ATTRIBUTE_NORMAL, nullptr);
++    if (file == INVALID_HANDLE_VALUE) {
++        return;
++    }
++    STARTUPINFOW si{sizeof(si)};
++    si.dwFlags = STARTF_USESTDHANDLES;
++    si.hStdOutput = file;
++    si.hStdError = file;
++    PROCESS_INFORMATION pi{};
++    if (CreateProcessW(nullptr, command.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr,
++                       nullptr, &si, &pi)) {
++        WaitForSingleObject(pi.hProcess, 30000);
++        CloseHandle(pi.hThread);
++        CloseHandle(pi.hProcess);
++        LOG_WARNING(Render_Vulkan, "DIAG-100: thread stacks written to {}", out.string());
++    }
++    CloseHandle(file);
++}
++#else
++void DumpThreadStacks(const wchar_t*) {}
++#endif
++
+ namespace {
+ 
+ // DIAG-049: graphics pipeline creations the driver takes long on, logged every 2 s while they
+@@ -119,6 +158,17 @@ private:
+                             "or more; {} MB committed", long_running, state.running.size(),
+                             CommittedMb());
+             }
++#ifdef _WIN32
++            // DIAG-100: a creation stuck for 30 s: once per run, every thread's stack goes to
++            // user\log\stuck-stacks.txt (tools\stackdump.exe next to GTSport.exe).
++            static bool dumped = false;
++            const bool stuck = std::ranges::any_of(
++                state.running, [](const auto& entry) { return Seconds(entry.second.start) >= 30.0; });
++            if (stuck && !dumped) {
++                dumped = true;
++                DumpThreadStacks(L"stuck-stacks.txt");
++            }
++#endif
+         }
+     }
+ 
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+index 8677c01e..e62d3b43 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+@@ -166,6 +166,46 @@ static void ReleasePrecompileHold() {
+     }
+ }
+ 
++// PERF-103: compile slow motion. While draws are skipped because their pipeline is still being
++// built, the guest clocks run at a quarter speed: held 3 ms of every 4 (no vblank passes while
++// held, so the game's frame rate drops with it), so a long compile looks like slow motion.
++static std::atomic<s64> g_last_skip_ns{};
++
++static u32 CompileMode() {
++#ifdef RYTY_GPU
++    static const u32 mode = static_cast<u32>(std::clamp(EmulatorSettings.GetCompileMode(), 0, 2));
++    return mode;
++#else
++    return 2;
++#endif
++}
++
++static void NoteSkippedDraw() {
++    g_last_skip_ns.store(std::chrono::steady_clock::now().time_since_epoch().count(),
++                         std::memory_order_relaxed);
++}
++
++bool CompileSlowMotion() {
++    const s64 last = g_last_skip_ns.load(std::memory_order_relaxed);
++    return CompileMode() == 1 && last != 0 &&
++           std::chrono::steady_clock::now().time_since_epoch().count() - last < 50'000'000;
++}
++
++static void SlowMotionThread(std::stop_token stop) {
++    Common::SetCurrentThreadName("shadGT:CompileSlowMotion");
++    using namespace std::chrono_literals;
++    while (!stop.stop_requested()) {
++        if (!CompileSlowMotion()) {
++            std::this_thread::sleep_for(5ms);
++            continue;
++        }
++        Common::GuestClock::TakeHold();
++        std::this_thread::sleep_for(3ms);
++        Common::GuestClock::ReleaseHold();
++        std::this_thread::sleep_for(1ms);
++    }
++}
++
+ PrecompileProgress GetPrecompileProgress() {
+     const u64 total = g_precompile_total.load(std::memory_order_relaxed);
+     const u64 done = std::min(total, g_precompile_done.load(std::memory_order_relaxed));
+@@ -635,6 +675,9 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
+             }
+         }
+     }
++    if (CompileMode() == 1 && AsyncPipelines()) {
++        static std::jthread slow_motion{SlowMotionThread}; // PERF-103
++    }
+     // FIX-078: a quarter of the hardware threads (at least 2) translate read-ahead shaders.
+     if (Common::PerfFeatureEnabled(102)) {
+         const u32 count = std::max(2u, std::thread::hardware_concurrency() / 4);
+@@ -1265,6 +1308,7 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
+                 // PERF-076: still building; this draw is skipped, the next ones look again.
+                 graphics_pipelines.erase(it);
+                 ++async_stats.skipped_draws;
++                NoteSkippedDraw(); // PERF-103
+                 return nullptr;
+             }
+             if (CancelBuild(*stored)) {
+@@ -1311,6 +1355,8 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
+         // draws that need it are skipped until it is done (a frame or two of a missing object),
+         // and the game does not stall for the 60-140 ms a build takes. SHADGT_ASYNC_PIPELINES=0
+         // or -DisablePerf 76 waits as before.
++        // PERF-103: in slow-motion mode every new pipeline goes on in the background at once
++        // and the game goes on in slow motion until it is built.
+         if (build && AsyncPipelines() && !WritesMemory(infos) && !NeverSkipped(infos) &&
+             build->done.wait_for(std::chrono::seconds{0}) != std::future_status::ready) {
+             build->async = true;
+@@ -1318,6 +1364,7 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
+             graphics_pipelines.erase(it);
+             ++async_stats.deferred;
+             ++async_stats.skipped_draws;
++            NoteSkippedDraw(); // PERF-103
+             return nullptr;
+         }
+         if (build) {
+@@ -2234,7 +2281,9 @@ bool PipelineCache::AsyncPipelines() {
+ #ifdef RYTY_GPU
+         // PERF-100: GPU.compile_freeze (on by default) pauses the game while a new pipeline
+         // compiles instead of skipping its draws.
+-        const bool by_default = !EmulatorSettings.IsCompileFreeze();
++        // PERF-103: GPU.compile_mode 0 (pause) waits; slow motion and keep going build in
++        // the background.
++        const bool by_default = CompileMode() != 0;
+ #else
+         const bool by_default = false;
+ #endif
+@@ -2861,6 +2910,11 @@ PipelineCache::Result PipelineCache::GetProgram(HwStage hw_stage, SwStage sw_sta
+     u32 needed_fixes = 0;
+     if (first_use) {
+         needed_fixes |= Shader::HasEmptyScopeBeforeElse(params.code) ? 1u : 0u;
++        if (Shader::HasLegacyMad(params.code)) {
++            needed_fixes |= 16u; // FIX-101
++            LOG_INFO(Render_Vulkan, "FIX-101: {}_{:#x} uses legacy multiply-add", hw_stage,
++                     params.hash);
++        }
+         const auto& wg = runtime_info.hw.cs.workgroup_size;
+         if (hw_stage == HwStage::Compute && profile.subgroup_size < 64 &&
+             wg[0] * wg[1] * wg[2] > 32 && Common::PerfFeatureEnabled(31) &&
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.h b/src/video_core/renderer_vulkan/vk_pipeline_cache.h
+index eda12db3..24f7c8af 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.h
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.h
+@@ -72,6 +72,8 @@ struct PrecompileProgress {
+ PrecompileProgress GetPrecompileProgress();
+ /// PERF-102: the game waits on the splash screen for the precompile.
+ bool PrecompileHoldsGame();
++/// PERF-103: the game runs in slow motion while pipelines it needs are compiled.
++bool CompileSlowMotion();
+ 
+ class PipelineCache {
+ public:
+diff --git a/src/video_core/renderer_vulkan/vk_presenter.cpp b/src/video_core/renderer_vulkan/vk_presenter.cpp
+index 55d58f59..9db80557 100644
+--- a/src/video_core/renderer_vulkan/vk_presenter.cpp
++++ b/src/video_core/renderer_vulkan/vk_presenter.cpp
+@@ -936,6 +936,16 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
+         }
+     };
+ 
++#ifdef RYTY_GPU
++    if (swapchain.FrameGenStartDue()) {
++        // FIX-102: frame generation's swapchain takes over the graphics queue, so nothing may be
++        // submitted to it or running on it while it is made.
++        std::scoped_lock submit_lock{Scheduler::submit_mutex};
++        (void)instance.GetGraphicsQueue().waitIdle();
++        LOG_INFO(Render_Vulkan, "FIX-102: splash screen gone, starting frame generation");
++        swapchain.Recreate(window.GetWidth(), window.GetHeight());
++    }
++#endif
+     // Recreate the swapchain if the window was resized.
+     if (window.GetWidth() != swapchain.GetWidth() || window.GetHeight() != swapchain.GetHeight()) {
+         swapchain.Recreate(window.GetWidth(), window.GetHeight());
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+index 12b2a0be..80390155 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -1,6 +1,7 @@
+ // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
++#include <filesystem>
+ #include <map>
+ #include <deque>
+ #include <fstream>
+@@ -1151,11 +1152,11 @@ void Rasterizer::TraceImageDependencies(VideoCore::ImageId source_id) {
+     std::unordered_map<u64, DiagImageRef> images;
+     std::unordered_map<u64, u32> image_depth{{source.image_uid, 0}};
+     constexpr size_t MaxProducersPerImage = 400;
+-    constexpr size_t MaxProducers = 6000;
++    constexpr size_t MaxProducers = 12000;
+     for (size_t q = 0; q < queue.size() && producers.size() < MaxProducers; ++q) {
+         const auto [uid, before, depth] = queue[q];
+         size_t found = 0;
+-        for (size_t i = before; i-- > 0 && found < MaxProducersPerImage;) {
++        for (size_t i = before; i-- > 0 && found < (depth == 0 ? size_t{3000} : MaxProducersPerImage);) {
+             const auto& record = g_diag_history[i];
+             const bool writes = std::ranges::any_of(record.images, [&](const DiagImageRef& ref) {
+                 return ref.uid == uid && ref.role != DiagRole::Sampled;
+@@ -1458,6 +1459,74 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
+     // DIAG-043: kept in memory and written out (with image dumps) when the thumbnail is drawn.
+     bool dump_thumbnail_chain = false;
+     RecordDiagHistory(pipeline, false, regs.num_indices);
++    // DIAG-104 (with SHADGT_DIAG_HISTORY=1): while user\log\trace-frame exists, the next whole
++    // frame drawn into a display buffer is traced: every draw it came from, how each picture got
++    // its contents, and the pictures dumped to user\log (dep frame_*.bin). For GT Sport's pink
++    // effect rectangles.
++    if (DiagHistoryEnabled()) {
++        // Also on its own: every 10th frame, 4 points of the finished frame are read, and a frame
++        // with the pink rectangles (magenta where they always appear) is traced, at most once
++        // per 15 s and 6 times per run. Traces are numbered (frame1, frame2, ...).
++        static auto last_check = std::chrono::steady_clock::time_point{};
++        static auto last_trace = std::chrono::steady_clock::time_point{};
++        static bool asked = false;
++        static u32 traces = 0;
++        static u32 frames = 0;
++        static VideoCore::ImageId pending{};
++        const auto now = std::chrono::steady_clock::now();
++        const auto trigger = Common::FS::GetUserPath(Common::FS::PathType::LogDir) / "trace-frame";
++        if (!asked && now - last_check > std::chrono::milliseconds{500}) {
++            last_check = now;
++            std::error_code ec;
++            asked = std::filesystem::exists(trigger, ec);
++        }
++        const auto rt = cb_descs[0].image_id;
++        if (rt) {
++            const auto& info = texture_cache.GetImage(rt).info;
++            const bool display = info.pixel_format == vk::Format::eA2B10G10R10UnormPack32 &&
++                                 info.size.width >= 1280;
++            if (display && pending && pending != rt) {
++                bool pink = false;
++                if (!asked && traces < 6 && ++frames % 10 == 0 &&
++                    now - last_trace > std::chrono::seconds{15}) {
++                    const auto& pinfo = texture_cache.GetImage(pending).info;
++                    const u32 w = pinfo.size.width;
++                    const u32 h = pinfo.size.height;
++                    const std::array<std::pair<u32, u32>, 4> points{{{w / 10, h * 93 / 100},
++                                                                     {w / 2, h * 93 / 100},
++                                                                     {w * 9 / 10, h * 93 / 100},
++                                                                     {w * 9 / 10, h * 70 / 100}}};
++                    std::array<u32, 4> texels{};
++                    u32 magenta = 0;
++                    if (texture_cache.ReadTexels32(pending, points, texels)) {
++                        for (const u32 t : texels) {
++                            const u32 c0 = t & 1023;
++                            const u32 c1 = (t >> 10) & 1023;
++                            const u32 c2 = (t >> 20) & 1023;
++                            magenta += c0 > 800 && c2 > 800 && c1 < 300;
++                        }
++                    }
++                    pink = magenta >= 2;
++                }
++                if (asked || pink) {
++                    ++traces;
++                    last_trace = now;
++                    diag_trace_tag = fmt::format("frame{}", traces);
++                    LOG_WARNING(Render_Vulkan, "DIAG-104: tracing frame ({})",
++                                pink ? "pink seen" : "asked");
++                    TraceImageDependencies(pending);
++                    std::error_code ec;
++                    std::filesystem::remove(trigger, ec);
++                    asked = false;
++                    pending = {};
++                } else {
++                    pending = rt;
++                }
++            } else if (display) {
++                pending = rt;
++            }
++        }
++    }
+     // DIAG-045: GT Sport accumulates the thumbnail's car frames into a 1600x900 target; trace the
+     // frame being added while the images it was made from are still alive.
+     {
+@@ -2528,6 +2597,29 @@ bool Rasterizer::IsComputeMetaClear(const Pipeline* pipeline) {
+         for (const auto& desc : info.buffers) {
+             const VAddr address = desc.GetSharp(info).base_address;
+             if (!desc.IsSpecial() && desc.is_written && texture_cache.ClearMeta(address)) {
++                // FIX-103: GT Sport reuses memory between frames' passes, so a CMASK address of
++                // one pass can be a color picture's memory in another. When the written range
++                // holds a picture, the dispatch is the game clearing that picture: run it.
++                // Skipping it left a 16 KB block of an effect picture uncleared, and its stale
++                // invalid numbers became the pink and black rectangles of dust, smoke and rain.
++                const auto sharp = desc.GetSharp(info);
++                if (buffer_cache.HasGpuImageAlias(address, std::max<u64>(sharp.GetSize(), 4))) {
++                    if (DiagHistoryEnabled()) {
++                        static std::atomic<u32> logged{};
++                        if (logged++ < 3000) {
++                            LOG_WARNING(Render_Vulkan,
++                                        "DIAG-105: compute clear {:#x}+{:#x} kept (holds a "
++                                        "picture)", address, sharp.GetSize());
++                        }
++                    }
++                    return false;
++                }
++                if (DiagHistoryEnabled()) {
++                    static std::atomic<u32> logged{};
++                    if (logged++ < 3000) {
++                        LOG_WARNING(Render_Vulkan, "DIAG-105: compute meta clear {:#x}", address);
++                    }
++                }
+                 // Assume all slices were updates
+                 LOG_TRACE(Render_Vulkan, "Metadata update skipped");
+                 return true;
+@@ -3586,6 +3678,25 @@ RenderState Rasterizer::BeginRendering(const GraphicsPipeline* pipeline) {
+         const auto& col_buf = regs.color_buffers[cb];
+         const bool is_clear = texture_cache.IsMetaCleared(col_buf.CmaskAddress(), slice);
+         texture_cache.TouchMeta(col_buf.CmaskAddress(), slice, false);
++        if (DiagHistoryEnabled() && image->info.size.width >= 128 &&
++            (image->info.pixel_format == vk::Format::eR16G16B16A16Sfloat ||
++             image->info.pixel_format == vk::Format::eB10G11R11UfloatPack32 ||
++             image->info.pixel_format == vk::Format::eR16Sfloat)) {
++            // DIAG-105: the first draws into each float render target: whether its CMASK said
++            // cleared, for GT Sport's pink effect rectangles.
++            static std::mutex mutex;
++            static std::unordered_map<u64, u32> seen;
++            std::scoped_lock lock{mutex};
++            if (seen.size() < 20000 && seen[image->image_uid]++ < 2) {
++                LOG_WARNING(Render_Vulkan,
++                            "DIAG-105: uid {} {:#x} {}x{} {} cmask {:#x} fast clear {} "
++                            "clear {} cleared {} ver {}",
++                            image->image_uid, image->info.guest_address, image->info.size.width,
++                            image->info.size.height, vk::to_string(image->info.pixel_format),
++                            col_buf.CmaskAddress(), bool(col_buf.info.fast_clear),
++                            is_clear, seen[image->image_uid], image->contents_version);
++            }
++        }
+ 
+         if (image->binding.is_bound) {
+             ASSERT_MSG(!image->binding.force_general,
+@@ -3748,7 +3859,15 @@ void Rasterizer::FillBuffer(VAddr address, u32 num_bytes, u32 value, bool is_gds
+     ASSERT_MSG(address % 4 == 0 && num_bytes % 4 == 0,
+                "FillBuffer address and size must be a multiple of 4 bytes");
+     if (!is_gds) {
+-        texture_cache.ClearMeta(address);
++        const bool meta = texture_cache.ClearMeta(address);
++        if (DiagHistoryEnabled()) {
++            // DIAG-105: fills, and whether they cleared a known CMASK/HTILE.
++            static std::atomic<u32> logged{};
++            if (logged++ < 3000) {
++                LOG_WARNING(Render_Vulkan, "DIAG-105: fill {:#x}+{:#x} value {:#x} meta {}",
++                            address, num_bytes, value, meta);
++            }
++        }
+         const bool cpu_path = !buffer_cache.IsRegionGpuModified(address, num_bytes) &&
+                               !buffer_cache.HasGpuImageAlias(address, num_bytes);
+         if (cpu_path) {
+diff --git a/src/video_core/renderer_vulkan/vk_scheduler.cpp b/src/video_core/renderer_vulkan/vk_scheduler.cpp
+index 435ddc1b..dfd4b397 100644
+--- a/src/video_core/renderer_vulkan/vk_scheduler.cpp
++++ b/src/video_core/renderer_vulkan/vk_scheduler.cpp
+@@ -534,6 +534,20 @@ void Scheduler::PerfMonitorThread(std::stop_token stoken) {
+         LOG_WARNING(Render_Vulkan, "Frontend work in {:.1f} s: {}",
+                     std::chrono::duration<double>(now - window_start).count(),
+                     Common::TakeWorkCounters());
++        // DIAG-103: the GPU busy with nothing new submitted for 10 s: the GPU (or a wait on it) is
++        // stuck; once per run, every thread's stack goes to user\log\gpu-stuck-stacks.txt.
++        static u32 stuck_windows = 0;
++        static bool dumped = false;
++        stuck_windows = (samples && busy_samples == samples && tick == window_tick)
++                            ? stuck_windows + 1
++                            : 0;
++        if (stuck_windows >= 5 && !dumped) {
++            dumped = true;
++            LOG_WARNING(Render_Vulkan, "DIAG-103: GPU work unfinished for 10 s with nothing new "
++                        "submitted (GPU tick {} of {})", work_semaphore.KnownGpuTick(),
++                        tick - 1);
++            DumpThreadStacks(L"gpu-stuck-stacks.txt");
++        }
+         window_start = now;
+         window_tick = tick;
+         samples = 0;
+diff --git a/src/video_core/renderer_vulkan/vk_scheduler.h b/src/video_core/renderer_vulkan/vk_scheduler.h
+index b882193f..f525541d 100644
+--- a/src/video_core/renderer_vulkan/vk_scheduler.h
++++ b/src/video_core/renderer_vulkan/vk_scheduler.h
+@@ -24,6 +24,9 @@ class VkCtxScope;
+ 
+ namespace Vulkan {
+ 
++/// DIAG-100: every thread's stack to user\log\<file_name>, if tools\stackdump.exe is there.
++void DumpThreadStacks(const wchar_t* file_name);
++
+ class Instance;
+ 
+ struct RenderAttachment {
+diff --git a/src/video_core/renderer_vulkan/vk_swapchain.cpp b/src/video_core/renderer_vulkan/vk_swapchain.cpp
+index b8e796c8..3b3e6b77 100644
+--- a/src/video_core/renderer_vulkan/vk_swapchain.cpp
++++ b/src/video_core/renderer_vulkan/vk_swapchain.cpp
+@@ -6,6 +6,9 @@
+ #include "common/assert.h"
+ #include "common/logging/log.h"
+ #include "core/emulator_settings.h"
++#ifdef RYTY_GPU
++#include "core/libraries/system/systemservice.h"
++#endif
+ #include "imgui/renderer/imgui_core.h"
+ #include "sdl_window.h"
+ #include "video_core/renderer_vulkan/vk_instance.h"
+@@ -71,8 +74,14 @@ void Swapchain::Create(u32 width_, u32 height_) {
+     };
+ 
+ #ifdef RYTY_GPU
++    // FIX-102: frame generation starts once the splash screen is gone. With it on during the
++    // splash precompile, its presenter thread and the window thread deadlocked inside the NVIDIA
++    // driver (the presenter held the driver lock while DWM waited on a window message, the window
++    // thread waited for the lock), and every pipeline build then waited for that lock too.
++    framegen_deferred =
++        RytyFrameGen::Requested() && Libraries::SystemService::IsSplashVisible();
+     // ryGT: FSR 3.1 frame generation makes the swapchain when it is on.
+-    if (!framegen.CreateSwapchain(instance, swapchain_info, swapchain))
++    if (framegen_deferred || !framegen.CreateSwapchain(instance, swapchain_info, swapchain))
+ #endif
+     {
+         auto [swapchain_result, chain] = instance.GetDevice().createSwapchainKHR(swapchain_info);
+@@ -85,6 +94,12 @@ void Swapchain::Create(u32 width_, u32 height_) {
+     RefreshSemaphores();
+ }
+ 
++#ifdef RYTY_GPU
++bool Swapchain::FrameGenStartDue() const {
++    return framegen_deferred && !Libraries::SystemService::IsSplashVisible();
++}
++#endif
++
+ void Swapchain::Recreate(u32 width_, u32 height_) {
+     LOG_DEBUG(Render_Vulkan, "Recreate the swapchain: width={} height={} HDR={}", width_, height_,
+               needs_hdr);
+diff --git a/src/video_core/renderer_vulkan/vk_swapchain.h b/src/video_core/renderer_vulkan/vk_swapchain.h
+index 954c6702..900ad198 100644
+--- a/src/video_core/renderer_vulkan/vk_swapchain.h
++++ b/src/video_core/renderer_vulkan/vk_swapchain.h
+@@ -31,6 +31,11 @@ public:
+     /// Recreates the swapchain with a given size and current surface.
+     void Recreate(u32 width, u32 height);
+ 
++#ifdef RYTY_GPU
++    /// FIX-102: frame generation is on and waited for the splash screen, which is now gone.
++    bool FrameGenStartDue() const;
++#endif
++
+     /// Acquires the next image in the swapchain.
+     bool AcquireNextImage();
+ 
+@@ -146,6 +151,7 @@ private:
+     bool supports_hdr = false; // SC supports HDR output
+ #ifdef RYTY_GPU
+     RytyFrameGen::FrameGen framegen; // ryGT: FSR 3.1 frame generation's swapchain when on
++    bool framegen_deferred = false;  // FIX-102: on, but waiting for the splash screen to end
+ #endif
+ };
+ 
+diff --git a/src/video_core/texture_cache/texture_cache.cpp b/src/video_core/texture_cache/texture_cache.cpp
+index 0c84a29d..e89fabe9 100644
+--- a/src/video_core/texture_cache/texture_cache.cpp
++++ b/src/video_core/texture_cache/texture_cache.cpp
+@@ -2,6 +2,8 @@
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+ #include <algorithm>
++#include <cstring>
++#include <boost/container/small_vector.hpp>
+ #include <atomic>
+ #include <chrono>
+ #include <limits>
+@@ -124,6 +126,40 @@ bool TextureCache::DumpImage(ImageId image_id, const std::filesystem::path& path
+     return true;
+ }
+ 
++bool TextureCache::ReadTexels32(ImageId image_id, std::span<const std::pair<u32, u32>> points,
++                                std::span<u32> out) {
++    Image& image = slot_images[image_id];
++    if (image.info.props.is_depth || image.info.props.is_block || image.info.num_bits != 32 ||
++        points.size() > out.size() || points.empty()) {
++        return false;
++    }
++    const auto download =
++        runtime.GetStagingPool().Request(u32(points.size() * 4), MemoryType::HostCached, 16);
++    boost::container::small_vector<vk::BufferImageCopy, 8> copies;
++    for (size_t i = 0; i < points.size(); ++i) {
++        const auto [x, y] = points[i];
++        if (x >= image.info.size.width || y >= image.info.size.height) {
++            return false;
++        }
++        copies.push_back({
++            .bufferOffset = download.offset + i * 4,
++            .bufferRowLength = 1,
++            .bufferImageHeight = 1,
++            .imageSubresource = {.aspectMask = vk::ImageAspectFlagBits::eColor,
++                                 .mipLevel = 0,
++                                 .baseArrayLayer = 0,
++                                 .layerCount = 1},
++            .imageOffset = {s32(x), s32(y), 0},
++            .imageExtent = {1, 1, 1},
++        });
++    }
++    runtime.DownloadImage(&image, download.buffer, std::span{copies.data(), copies.size()});
++    scheduler.Finish();
++    download.Invalidate();
++    std::memcpy(out.data(), download.mapped, points.size() * 4);
++    return true;
++}
++
+ bool TextureCache::HasLargePendingReadbacks() {
+     std::unique_lock lk{download_images_mutex};
+     return std::ranges::any_of(download_images, [this](ImageId id) {
+@@ -979,7 +1015,7 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
+                         (u64(info.size.height) << 20) ^ (u64(found.info.size.height) << 52) ^
+                         (u64(desc.type) << 60) ^ u64(found.info.pitch) * 0x9e3779b97f4a7c15ull;
+         std::scoped_lock lock{log_mutex};
+-        if (logged.size() < 4000 && logged.insert(key).second) {
++        if (logged.size() < 30000 && logged.insert(key).second) {
+             LOG_WARNING(Render_Vulkan,
+                         "DIAG-074: lookup {:#x} {}x{}x{} pitch {} mips {} layers {} {} tile {} "
+                         "array {} bind {} -> image {} at {:#x} {}x{}x{} pitch {} mips {} {} tile {} "
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+index 752f90f3..d6140ad6 100644
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -3,6 +3,7 @@
+ 
+ #pragma once
+ 
++#include <span>
+ #include <atomic>
+ #include <chrono>
+ #include <filesystem>
+@@ -430,6 +431,9 @@ public:
+ 
+     /// DIAG-043: writes the first mip and layer of an image as raw bytes (waits for the GPU).
+     bool DumpImage(ImageId image_id, const std::filesystem::path& path);
++    /// DIAG-104: the 32-bit texels at the given points of a color image (waits for the GPU).
++    bool ReadTexels32(ImageId image_id, std::span<const std::pair<u32, u32>> points,
++                      std::span<u32> out);
+ 
+     /// FIX-032: a read-back image of 64 KB or more (GT Sport's car thumbnail) is waiting.
+     bool HasLargePendingReadbacks();
+-- 
+2.56.0.windows.1
+

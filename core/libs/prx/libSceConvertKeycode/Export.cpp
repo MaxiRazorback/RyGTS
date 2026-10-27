@@ -10,6 +10,10 @@ constexpr int kErrInvalidUserId = static_cast<int>(0x80BC0010u);
 
 extern "C" {
 
+int APS5_VABI sceConvertKeycodeGetCharacter() {
+    return 0;
+}
+
 int APS5_VABI sceConvertKeycodeGetImeKeyboardType(int32_t userId, uint32_t* type) {
  if (type == nullptr) return kErrInvalidAddress;
  if (userId < 0) return kErrInvalidUserId;

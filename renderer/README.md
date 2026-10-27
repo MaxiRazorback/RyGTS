@@ -1,0 +1,508 @@
+# Renderer changes (shadGT, branch `ryty-gpu`)
+
+The renderer (`libSceVideoOut.prx`) is built from
+[shadGT, branch `ryty-gpu`](https://github.com/mlgprorektm8/shadGT/tree/ryty-gpu). Changes made
+after shadGT commit `29af7ca6` are kept here as patches, in order (the branch itself includes all of them from
+commit `4371a500`):
+
+| Patch | What it adds |
+|---|---|
+| `0001-ryGT-frame-generation-...` | AMD FSR 3.1.4 frame generation, shader precompile on the splash screen (with a progress bar), pausing the game while new shaders compile, compile batching, efficiency-core shader compiles, opt-in diagnostics |
+| `0002-ryGT-splash-screen-shows-...` | Hotfix: the splash screen and progress bar show while the game waits for the precompile (it was a black screen) |
+| `0003-ryGT-Lewis-Hamilton-Time-Trial-...` | GTS-002: unlocks the Lewis Hamilton Time Trial Challenge in the Campaign menu (the add-on's unlock flags came from the shut-down servers); `RYGT_LEWIS=0` turns it off |
+| `0004-ryGT-Livery-Editor-offline-GTS-003` | GTS-003: enables the Livery button on the main menu while offline (the menu script greyed it out without the servers; the editor has its own offline mode that saves liveries locally); `RYGT_LIVERY=0` turns it off |
+| `0005-ryGT-effects-fix-frame-generation-...` | Dust, smoke and rain no longer show pink and black rectangles (the game's clears of reused effect memory ran as skipped "mask clears"); frame generation starts after the splash screen (it could freeze the precompile); slow-motion shader compiles; freeze and frame-capture diagnostics |
+| `0006-ryGT-on-screen-keyboard-offline-livery-...` | On-screen keyboard for text fields, whole-script replacements from `patches\scripts` (GTS-005), custom decals from the `decals` folder (GTS-006) |
+| `0007-ryGT-renderer-speed-work-2026-10-15` | Recorder speed-ups (fence writes through cached aliases, texture lookup memo), the decoder's shader search tries the last match first, early-fence deadlock fixes, and the opt-in multithreaded groundwork (per-thread draw state and command rings, buffer stage workers, shared buffer-cache lock) with ceiling and timeline diagnostics |
+| `0008-ryGT-direct-memory-renderer-2026-10-16` | The new renderer (launcher option "New renderer", `GPU.direct_renderer`, or `SHADGT_DIRECT=1`): shaders read game memory in place through a GPU page table over imported guest memory instead of copying buffers every draw (Tokyo rain benchmark about 32 -> 43 fps); freed render targets are reused instead of rebuilt (all modes); wet-road reflection (GTS-007) and half-rate mirror (GTS-008) toggles; texture-binding shortcuts; import prototype, ceiling and timing diagnostics |
+| `0009-ryGT-buffer-stage-with-direct-renderer` | With the new renderer, a helper thread fetches the remaining (copied) buffers ahead of the draw recorder (about +1.5 fps in the Tokyo rain benchmark) |
+| `0010-ryGT-framegen-compile-freeze-fix` | Frame generation pauses while new shaders compile (with it on, heavy compiling could freeze the game in the driver); timing switches for the command thread and pipeline selection |
+| `0011-ryGT-quality-preset-memory` | The reused-image pool size follows the launcher's quality preset (`GPU.image_recycle_mb`) |
+| `0012-ryGT-old-shader-fallback-direct-default` | The new renderer is the only renderer (`SHADGT_DIRECT=0` for comparisons); while its own shaders and pipelines are built in the background, draws use the old renderer's stored shaders, so switching causes no shader-compile freezes |
+| `0019-ghost-quad-sample-mask` | Per-quad sample coverage masks restore recorded ghost transparency; ordinary shader caches remain compatible |
+| `0020-fix-dlss-temporal-scene-reconstruction` | Temporal DLSS scene inputs, persistent history, RGB conversion and HUD composition in the serial renderer; full-rate mirror while temporal DLSS is selected |
+
+To build: check out shadGT at `29af7ca6`, apply the patches with
+`git am <RyGT>/renderer/shadGT-patches/*.patch`, then build the `ryty_gpu` target as in the main
+README (`cmake --preset x64-Clang-Release -DSHADGT_RYTY_GPU=ON`).
+
+For the portable stdout severity gate and timestamped log rotation, see
+[LOGGING.md](LOGGING.md). Patch 0019 is applied after the existing 0018 patch;
+the current upstream renderer does not include it.
+
+Patch 0020 fixes the non-renderer host libraries' shared-stub link dependencies
+when rebuilding the complete library set with logging enabled.
+
+Patches 0026-0038 come from contributors: 0026-0027 and `0019-ryGT-limit-concurrent-vulkan-pipeline-compiles`
+(Tanos; that one applies after 0025), 0029-0038 (xacidr4inx, plain diffs: apply them with
+`git apply`) with `vma-patches/0001-trim-empty-default-blocks.patch` for shadGT's `externals/vma`.
+Patch 0039 is the shader-compile work (all-core compiles when many wait, faster shader-pack
+translation, store dump). Patch 0040 adds the native renderer (experimental): GT Sport's command
+buffers are recorded straight into Vulkan by its own renderer instead of shadGT's (about 33-39 fps
+against 29 in the Tokyo rain benchmark). The launcher's "Renderer" dropdown picks it
+(`GPU.native_renderer`; `RYGT_NATIVE=1` or `=0` overrides); the old renderer stays the default.
+Known open problems: in Tokyo at night the cockpit's ambient light flickers between warm and dark
+frames, and rare frames are drawn from a wrong camera. Patch 0041 makes shadGT apply the VMA patch
+by itself at configure time. Patch 0042 lets the non-renderer host libraries link again (a no-op
+Controllers window toggle), and 0043 replaces CreateFileMapping2, which Wine and Proton before 11
+lack, with CreateFileMappingW so that every host library loads under Proton 10 (see
+[docs/user/LINUX.md](../docs/user/LINUX.md)). Patch 0044 (FIX-160) makes the native renderer and
+the background shader workers read guest memory safely, since the game can release it while
+the renderer still reads it (two crashes in a Linux tester's runs).
+Patch 0045 (DIAG-161) prints GT Sport's own fatal-error message to stderr before the game ends
+itself ("[game] fatal error at <file>(<line>): <message>"). Patch 0046 (DIAG-163) logs the first 60
+scripts the game loads at start-up ("[boot] script <n> (+<ms> ms): <unit>"; `RYGT_LOG_BOOT=0` turns it
+off), to show how far a boot that ends early got.
+
+Patch 0042 (Gabarsolon) fixes Intel Arc rendering, compute barrier deadlocks, and DirectMemory performance
+on the native renderer:
+- Replaces `OpControlBarrier` with `OpMemoryBarrier` in compute shaders when `subgroup_size < 64`, avoiding
+  hardware EU arrival counter hangs in wave64-uniform branches.
+- Removes Intel from `needs_lds_barriers` to match AMD.
+- Unconditionally binds compute pipelines in `DispatchDirect` and `DispatchIndirect` on the primary command stream.
+- Selects `HOST_CACHED` (Type 2) memory for host-imported buffers in `DirectMemory` and `ImportHostMemory`.
+
+Despite its number, 0042-intel-arc applies after 0053 and before 0054 (it was written later). The copy
+here is UTF-8 (the first one was UTF-16, which `git apply` can't read) and has two conflicts resolved:
+`log.cpp` keeps the leveled stdout without a renderer log file (0029/0048), and FIX-171's rectangle and
+packed texture probes get the same transfer-to-host barrier as the patch's general probe.
+
+`0019-ghost-quad-sample-mask` (Gabarsolon) is applied in shadGT after the native renderer, merged
+with its larger push block (the quad sample mask follows the four buffer-offset vectors).
+
+shadGT's branch `ryty-gpu` has every patch applied (commit `0522545b`; `84cf50ce` added skipping
+screenshots of an empty picture); building from it is the simplest way to get the current renderer.
+Patches 0042-0050 are included there too (`ryty-gpu` and `linux-proton` are both at `0522545b`). Patch 0047
+puts the shader cache in `<RyGT folder>\shaders` instead of `user\cache`; 0048 makes the launcher's Info
+log level include the renderer's Info lines (frame-time windows). 0049 (FIX-165) stops using the driver's
+pipeline cache file (`RYGT_DRIVER_CACHE=1` turns it back on, saved only at exit): at 3.7 GB, its
+saves every 30 s made native races drop to 10 fps and back. 0050 (DIAG-166) attaches RenderDoc when its
+layer is on: F12 or a `capture.now` file in the RyGT folder captures a frame into `captures`.
+Patch 0057 (GTS-009) fills screens wider (or narrower) than 16:9: `GPU.aspect_ratio` ("auto", the
+launcher's Display > Screen shape > "Fill the screen", is the shape of the game's window or screen;
+also "21:9", "32:9", width:height or a number; `RYGT_ASPECT` overrides it) widens the race camera's
+16:9 aspect (eboot 0x5e717f) and stretches the picture over the whole window instead of black
+bars. The HUD and menus are stretched with the picture; 16:9, the default, changes nothing.
+
+Patches 0058-0061 are AMD fixes, tested on an RX 7600 (Windows 11, driver 26.8.1, 16 GB RAM) at
+Dragon Trail. They apply after 0057 (shadGT `ryty-gpu` at `7080bee5`).
+- 0058 (FIX-188) turns direct memory back on by default. 0042-intel-arc turned it off for every
+  GPU; without it the native renderer copies every buffer through host upload memory, and a 16 GB
+  PC ran out at the start of a race ("NAT-100: no upload memory"). `SHADGT_DIRECT=0` still turns
+  it off (Intel Arc).
+- 0059 (FIX-189): AMD's driver refuses storage use for BC6H images even with extended usage, so
+  the native renderer made no image for GT Sport's HDR sky and reflection maps (black sky, flat
+  car paint). Such images are now made without storage use; shaders only sample them.
+- 0060 (FIX-191): without manual interpolation (AMD's path), a fragment input that a shader reads
+  both blended (`V_INTERP_P2_F32`) and per vertex (`V_INTERP_MOV_F32`) was read at vertex 0 for the
+  blended read, so terrain and kerbs were drawn as flat-coloured triangles. The blend is now
+  computed from the barycentrics. Stored translations keep the old result: clear
+  `<RyGT folder>\shaders\<serial>-direct-sets` once after updating.
+- 0061 (FIX-187): with frame generation on, minimizing the window (a 0x0 surface) no longer
+  crashes the game; generation stays off until the window is restored.
+
+## Combined renderer enhancements
+
+Patch 0062 applies after the temporal DLSS patch 0020. For the tested source combination,
+check out shadGT `ryty-gpu` at `1d13c88d2e57bc63ce1586fe0b8f3342b6afdd19`, then apply the
+current 0020 and 0062 patches with `git apply`. Other patches in this directory are already
+included in that shadGT revision. Build the `ryty_gpu` target, the main-branch DLSS plugin,
+and the Windows launcher. The renderer/plugin DLSS interface headers must match.
+
+0062 adds smooth recorded-ghost blending and four GPU JSON settings: `ghost_body_opacity`,
+`ghost_rubber_opacity`, `ghost_rim_opacity`, and `ghost_rim_brightness` (0-100, default 25).
+They are read when the game starts. It also adds the PS4 Pro 1080p preset, output-resolution
+UI, optional fast flips, post-DLSS sharpening, experimental HDR, frame-generation gating,
+shader-allocation guards, and bounded texture-memory recovery and supported VRAM paging.
+
+Both renderers support smooth ghost blending, output-resolution UI and post-DLSS sharpening.
+The native renderer synchronizes UI proxy writes before guest texture reads, storage writes,
+copies and resolves, and captures the UI frame under its recording lock. Pro tiling specialization
+is shared between renderers; native pipeline keys distinguish base and alternate layouts.
+Native image/buffer allocation failures reclaim completed allocations and empty allocator blocks,
+then retry the identical allocation once. Live images are not discarded for recovery.
+Recognized SDR gameplay reconstructed by temporal DLSS in the default renderer uses its scene/HUD
+output; other supported frames use the separate UI proxy. Upstream temporal DLSS remains limited
+to the default renderer. Native rendering retains the legacy DLSS interface. HDR is experimental
+in both paths; the native HDR layer is connected, but live HDR gameplay is not validated.
+The Pro option selects the game's 1080p Neo preset; a higher host output size does not make
+every internal game pass render at that resolution.
+
+The launcher retains main's tabbed layout, renderer choice, ultrawide options, wheel support,
+and temporal DLSS behavior. The shader-pack preparation destination retains the upstream
+Hotfix 2 correction (`CUSA03220-direct-sets`).
+Patches 0058 and 0059 limit 0042-intel-arc to Intel GPUs. On NVIDIA its shader translation turned
+races red with magenta cars (memory-only compute barriers and 64-bit shared memory as 32-bit halves,
+with an empty shader store), and it also turned direct memory off and undid SanitizeCopyLayers for
+every GPU. 0058 reverts it; 0059 (FIX-188) brings its Intel Arc changes back behind
+`Instance::IsIntel()` (vendor 0x8086), so every other GPU runs what it ran before 0042-intel-arc.
+`ryty-gpu` and `linux-proton` have every patch through 0059 (commit `1d13c88d`).
+
+## Camera Manager
+
+`shadGT-patches/0065-in-game-camera-manager.patch` adds the in-game Camera Manager
+for Windows. It is a plain Git diff against shadGT
+`1d13c88d2e57bc63ce1586fe0b8f3342b6afdd19` on `ryty-gpu`; apply it with `git apply`
+on that checkout, then build the existing `ryty_gpu` target. Its native renderer
+and shader sources are unchanged. This patch follows the existing RyGT convention
+of carrying shadGT additions here; the shadGT source tree is not vendored into RyGT.
+
+The patch includes the dedicated camera sources, build integration and the host
+startup, overlay and input connections. It does not include compiled modules.
+Existing build options are retained. Camera compatibility is checked using the
+mapped executable's camera signatures, sections and hook targets, not a whole-file hash.
+
+For controls, ranges and presets, see [Camera Manager](../docs/user/CAMERA_MANAGER.md).
+For the standalone Windows tests, see [camera-manager-tests](camera-manager-tests/README.md).
+## Temporal FSR 3.1 and Intel XeSS (0063-0064)
+
+Patches 0063 and 0064 apply after 0062 (shadGT `ryty-gpu` at `1d13c88d` plus 0020, 0062 and
+0058-0061). Tested on an RX 7600 (Windows 11, driver 26.8.1) at Dragon Trail.
+- 0063 (FIX-211): AMD's driver refuses storage use for some block-compressed images (BC5, BC6H)
+  even with extended usage. The default renderer made them anyway and the textures came out
+  garbled (broken colours on car dashboards). They are now made without storage use when
+  `getImageFormatProperties2` refuses it; shaders only sample them.
+- 0064 (FSR-201..209): temporal upscaling with the scene inputs from 0020 (colour, depth, motion
+  vectors and jitter), default renderer only. It replaces the game's anti-aliasing.
+  - `GPU.fsr_temporal` turns it on (with `fsr_enabled` and `fsr3_enabled`; DLSS temporal wins
+    when it is on). `SHADGT_FSR_TEMPORAL` overrides it.
+  - `GPU.fsr_upscaler` picks the backend: `fsr3` (FSR 3.1 through `amd_fidelityfx_vk.dll`),
+    `fsr4` (newest 4.x the DLL offers; AMD ships FSR 4 for D3D12 only, so this is a placeholder)
+    or `xess` (Intel XeSS-SR, needs `libxess.dll` from the XeSS SDK next to `GTSport.exe`).
+    `SHADGT_FSR_UPSCALER` overrides it.
+  - `GPU.upscale_ratio` (string) sets the render size below the output: `1` (native, AA only),
+    `1.3`, `1.5`, `1.7`, `2`, `2.3`, `3`; `0` renders at the window size. XeSS picks the quality
+    mode whose ratio is nearest. `SHADGT_UPSCALE_RATIO` overrides it.
+  - The window title names the upscaler in use, e.g. `ryGT - Gran Turismo Sport | FSR 3.1.4
+    temporal 1280x720 -> 1920x1080`.
+  - Depth reaches FSR/XeSS through an R32 copy and the reconstruction is blitted to the native
+    image: on AMD, a D32S8 depth view and the view-copy draw faulted the GPU (device lost).
+  - DIAG-206 logs a `VK_EXT_device_fault` report when the device is lost.
+
+The launcher's Graphics tab has the matching options: "Temporal upscaling", "Upscaler" (AMD FSR
+3.1, AMD FSR 4 (D3D12, WIP), Intel XeSS) and "Output resolution" (render size, from native 1080p
+down to 360p for 1080p output).
+
+Known issue (AMD, default renderer): scattered green and red dots on car dashboards (seen on the
+R92CP in the garage and in races). They are older than these patches and do not show in a
+RenderDoc replay of the same frame. Ruled out so far: FIX-191, image recycling, MSAA, draw-to-draw
+barriers, finishing the GPU after every draw, the staging ring, zero-filled new images, present
+FSR and zeroed undefined shader registers.
+
+## Radeon RX 400 to RX 9000 (0065)
+
+Patch 0065 applies after 0064. The fixes above were checked against the Vulkan reports of each
+Radeon generation's newest Windows driver on vulkan.gpuinfo.org: RX 580 and RX Vega (2.0.283,
+Vulkan 1.3.264), RX 5700 XT and RX 6800 (2.0.353), RX 7600 (2.0.406) and RX 9070 XT (2.0.416).
+Every generation has what the renderer requires (Vulkan 1.3, push descriptors, vertex attribute
+divisor, robustness2). FIX-189 and FIX-211 ask the driver per format, so they follow each card.
+The texture formats the RX 7600 cannot use (96-bit R32G32B32, signed 10-bit A2B10G10R10) are
+missing on every Radeon, and GT Sport's logs show no textures made in them.
+- AMD-301: the 64-wide subgroup requirement goes only to stages the driver lists
+  (`requiredSubgroupSizeStages`: compute on every Radeon, fragment from RX 7000 on). It was
+  given to every graphics stage, which the Vulkan spec does not allow.
+- AMD-302: RX 400/500 have no `shaderFloat16`; translated shaders that use 16-bit floats declare
+  Float16, so `VK_AMD_gpu_shader_half_float` (on every Radeon) is enabled in that case.
+- XESS-210: if XeSS does not start on a GPU, temporal upscaling switches to FSR 3.1.
+- AMD-300 (test switch): `SHADGT_SIMULATE_GPU=gcn|rdna1|rdna2` makes the device report only what
+  an RX 400/500/Vega, RX 5000 or RX 6000 driver offers; `SHADGT_SIMULATE_SKIP=<item>,...` keeps
+  items real (extension names, `f16`, `gpl`, `v3d`, `af2`, `sub`, `push`, `driver`).
+
+Tested on an RX 7600: races with 0065, and the simulated RX 400/500, RX 5000 and RX 6000 paths to
+the menus. A full RX 400/500 simulation (both `VK_EXT_graphics_pipeline_library` and
+`VK_EXT_vertex_input_dynamic_state` off in the driver) loses the device in a compute dispatch,
+while the same renderer paths with the extensions still enabled in the driver render. That points
+at the RDNA 3 driver in that mode rather than the renderer; RX 400/500 run AMD's separate legacy
+driver, so only a real card can confirm them. The buffer cache's 4 GB sparse arena pages exceed
+the 2 GB `maxBufferSize` every Radeon reports; RDNA 3's driver accepts them.
+
+## Native resource lifetime and reflection fixes (0066)
+
+Apply `0066-native-resource-lifetime-and-reflection-fixes.patch` after the current
+0020 and 0062-0065 patches on shadGT `ryty-gpu` at
+`1d13c88d2e57bc63ce1586fe0b8f3342b6afdd19`. The lighting-storage, compute-fence
+completion and render-target identity fixes (0054-0056) must also be present.
+When applying the Camera Manager after the upscaler patches, retain both the
+`ryty_camera.h` and `ryty_upscaler_status.h` includes in `ryty_entry.cpp`.
+The older local experimental 0047-0059 patch variants are not prerequisites.
+
+This patch retains GPU-only lighting and depth images within a 512 MiB budget,
+releases page watches only after their final native resource owner retires,
+and invalidates failed host imports after guest mapping changes. It bounds
+image/sparse allocations, protects queued pipeline and translated-fetch lifetimes,
+and batches page protection while refreshing only the buffer ranges being used.
+Menu buffer snapshots and bounded scalar prefixes improve menu performance;
+races retain the direct path to avoid geometry corruption. Image downloads use
+GPU-local tiling before copying back, and overlapping texture uploads preserve
+GPU-written region data.
+
+Normalized native fragment cube sampling uses cube-array views and reconstructed
+directions for filtering across face edges. Vertex/compute sampling and unsupported
+cube operations retain their existing paths. Translation cache versions invalidate
+only the affected shader categories. Vertex-fetch conversions now agree with their
+specialization keys. The window title identifies the active renderer.
+
+The Release renderer built successfully and all 2,609 packaged import bindings
+resolved. Resource-watch cleanup passed 4,097 ownership/overlap cases. Runtime
+checks confirmed restored distant shadows, normal sparks, correct track and
+showroom reflections, and improved menu performance. Intermittent menu-icon
+corruption and other captured defects remain under investigation. Temporary GPU
+timers, road/floor/curve traces, diagnostic shaders, capture helpers, and compiled
+binaries are not included in this patch.
+
+Patch 0067 applies after 0066. It orders native region-refresh transfer writes
+before a texture upload or untiling dispatch reads the same buffer. The upload
+callback can record these writes after the upload pass's initial barrier; without
+the dependency, menu icons can receive stale bytes. A delayed-transfer regression
+and six upload/overlap cases pass, the Release build and 2,609 import checks pass,
+and the runtime menu icons stayed correct after a track-to-menu transition.
+
+Patch 0068 applies after 0067. Depth-writing draws wait for both shader translation
+and graphics pipeline creation instead of being skipped during asynchronous
+compilation. A shadow map baked only during loading must receive every caster
+draw; retaining an incomplete map cannot restore the missing shadows. Other
+draws retain the existing asynchronous policy. Newly encountered depth-writing
+pipelines can cause compilation pauses.
+
+The Release renderer built successfully and all 2,654 checked local import
+bindings resolved. A fresh-process first Tokyo track load showed the previously
+missing distant tree shadows with correct rendering. No temporary shadow traces,
+instrumented shaders, capture helpers, or build artifacts are included.
+
+Patch 0069 applies after 0068. Native keeps at most sixteen completed 8 MiB upload
+chunks (128 MiB), rather than retaining the peak reached during loading. Chunks
+still in flight remain untouched; excess completed buffers use the existing
+GPU-safe retirement path. This bounds reusable upload memory, not total VRAM.
+After track-to-menu testing, the live free cache measured 96-104 MiB versus an
+earlier uncapped 568 MiB sample. Rendering and performance remained correct;
+dedicated-VRAM savings have not been quantified.
+
+Patch 0070 applies after 0069 and refines 0068. Only depth-only passes receive its
+mandatory shader-translation and graphics-pipeline waits. Ordinary color draws
+can write depth too; forcing all of them to wait stalled menu cursor updates and
+audio during compilation. Existing asynchronous policies and shader-memory-write
+protection remain in place. Runtime testing confirmed responsive cursor/audio
+while new menu shaders compiled and correct distant shadows on the first Tokyo
+track load.
+
+The combined Release renderer built successfully and all 2,654 local import
+bindings resolved. Temporary allocation inventories, memory readers, capture
+helpers, experimental pool/trimming changes, diagnostic shaders, and compiled
+artifacts are excluded from both patches.
+
+Patch 0071 applies after 0070. Native fill-pattern buffers previously accumulated
+for every distinct fill value, and superseded buffers stayed alive indefinitely.
+Cache recent patterns within 64 MiB, keeping a single larger pattern only when
+that request requires it. Evicted and replaced buffers follow the existing RHI
+fence retirement so recorded GPU copies can finish safely.
+
+Read-only mirrors unused for more than 600 presented frames are also reclaimed
+through the existing binding invalidation, watch ownership, and GPU retirement
+paths. GPU-written regions and retained lighting/shadow images are unaffected.
+
+The pattern-cache regression covers exact budget boundaries, recent-key reuse,
+replacement, 1,000 changing values, oversized requests, and recovery below budget.
+The mirror regression covers idle boundaries and preservation of active mirrors.
+Four matched on-track loads in one Native process completed with correct rendering
+and performance: adapter VRAM was 3,839 MiB initially and 3,877 MiB on the fourth
+load, without the reported roughly 100 MiB increase on each reload. Fill-pattern
+storage settled at 50.9 MiB; the earlier unbounded run held 427.4 MiB plus 17.8 MiB
+of superseded buffers. Adapter readings include other GPU users and are not a
+measurement of game-only VRAM. Other allocation categories and unrelated rendering
+or device-lost failures remain separate investigations.
+
+The production-only Release renderer built successfully, all 2,655 checked local
+import bindings resolved, and patches 0069-0071 applied in sequence to the clean
+staging baseline.
+
+Only the production cache/lifetime changes are included. Curve traces, allocation
+inventories, capture helpers, diagnostic flags, and compiled artifacts are excluded.
+
+## Shader store version (0072)
+
+Patch 0072 (FIX-213) applies after 0071. Stored shader translations
+(`<RyGT folder>\shaders\<serial>-direct-sets`) load unchecked, so after an update
+that changes how shaders are translated, the store kept the old translations and
+drew with them. On an RX 7600 (driver 26.8.1) the update to PR #88 drew a magenta
+car and red scenery until the folder was deleted by hand, as 0060's note already
+asks for.
+
+The store now carries a version (`store-version.txt` inside it). A store without
+the current version is set aside as `<store>.outdated` and starts again, and the
+launcher's shader pack stamp (`shaders-pack.txt`) is removed with it, so the next
+Play prepares the shader pack into the new store. The first Play after the update
+translates the shaders again, which takes a few minutes once. Raise `StoreVersion`
+in `cache_storage.cpp` whenever a change makes stored translations wrong.
+
+On the RX 7600, deleting the store by hand made the colours right again; this patch
+does that step automatically. It was compiled with the Release flags; the automatic
+set-aside has not yet been run in the game. Only `cache_storage.cpp` changes; it is
+the same at shadGT `1d13c88d` and after patches 0020 and 0059-0071.
+
+## MED3 quiet-NaN semantics and shader cache refresh (0078)
+
+The SPIR-V fallback now implements GCN MED3's quiet-NaN minimum behavior instead
+of turning an invalid material color into 65000. The AMD trinary instruction path
+and bloom strengths stay unchanged. Every shader binary specialization family
+gets a new semantic revision; old binaries are rejected and translated again.
+The shader folder does not need manual deletion; first-use compilation is expected.
+
+Validation includes 2,000 MED3 instruction cases, 23 revision-discovery cases,
+the Release renderer build and 2,610 local import bindings. The source-generated
+build removed the Subaru window glow and broad bright-car camera pass. Other
+passes, track-to-menu transitions, distant shadows and performance remained correct.
+Diagnostics and cached probe shaders are excluded. The separately reported AMD
+driver pipeline-compiler crash is not established as fixed by this change.
+
+## Exclude race and attract-replay buffers from menu snapshots (0080)
+
+The 1 MiB CPU snapshot path now also checks native race-session lifetime. The
+idle replay loads through `leavedemo` and `AutoDemo.adl` while the script-based
+project classifier can still say menus, allowing CPU snapshots of GPU-written
+race data and producing vertex explosions. The guard disables snapshots before
+`RaceInterface.startSession` and releases them after `endSession` returns. It
+retains the existing race-project exclusion and does not alter compiler policy.
+
+A generation token prevents an older session's end from clearing a newer start.
+Both hooks validate the CUSA03220 v1.69 entry bytes. If either cannot be installed,
+CPU snapshots remain disabled rather than using the unsafe menu path.
+
+The Release candidate built and passed 2,610 local import bindings. Session tests
+cover replay entry without a script reload, repeated starts, stale retirement,
+and 1,000 concurrent replacement cases. The automatic idle race replay was then
+observed through its native session start, and the user confirmed correct rendering.
+The unrelated late-event investigation is ongoing; no timing hooks, trace flags,
+probe shaders, renderer binaries or launcher changes are included in this patch.
+
+To run the host-only session test from an x64 Visual Studio developer prompt:
+`cl /EHsc /std:c++20 /I path\to\patched-shadGT renderer\menu-snapshot-tests\session_test.cpp /Fe:session_test.exe`
+then run `session_test.exe`. Compile without NDEBUG so assertions remain enabled.
+
+## Upload and first-compilation depth correction
+
+Patch 0083 snapshots CPU region uploads and preserves depth-only bakes when color output is disabled; see [UPLOAD-DEPTH-FIXES.md](UPLOAD-DEPTH-FIXES.md).
+
+## Native pattern-transfer fills (0076)
+
+Native recognizes the bounded two-word buffer-fill shader and records equivalent
+GPU transfers: a uniform fill or a copy from the bounded alternating-pattern cache.
+Only the three argument words read by the known shader are captured. GPU-backed
+arguments and unsupported dispatch shapes retain the compute path. Barriers,
+image invalidation and deferred GPU retirement remain in place.
+
+Matched Dragon Trail Time Trial results-screen samples with streaming off reduced
+63 clear dispatches from about 10.5 ms to 0.59 ms and increased 48 FPS to 60 FPS
+on the tested NVIDIA machine. Two track/menu cycles retained correct shadows,
+geometry, lighting and sparks. These are local results, not a guarantee for all GPUs.
+Temporary timing, upload-chunk comparisons, shader probes and binaries are excluded.
+
+## Idle keyboard close and event entry (0077)
+
+Skip the keyboard close routine only when its guarded state read reports idle.
+Normal race entry previously spent about five seconds closing a dialog that was
+not open, allowing the race to advance behind the fade. Active, pending and error
+states retain the original close routine; a failed state read also forwards it.
+The hook checks the original entry bytes and is enabled by default.
+
+The local comparison reduced idle close from 5,031 ms to 0-15 ms; normal race
+entry and UI loading were confirmed improved. Active text-entry behavior and
+missing race music remain unverified. This patch contains no timing probes,
+shader changes, compiler policy changes or game data.
+
+## Native performance follow-up
+
+Patch 0081 makes unused Native staging rings allocate on demand; see [RAM-ALLOCATION.md](RAM-ALLOCATION.md). Patch 0082 adds worker-owned compiler scheduling and bounded heavy-job admission; see [COMPILER-SCHEDULING.md](COMPILER-SCHEDULING.md).
+## Layered render-target reuse (0077)
+
+Native checks each mip's per-layer byte footprint, offset, pitch and padded height
+before reusing a layered depth or color target. Single-layer reuse and compatible
+shadow-array views with different layer counts remain supported.
+
+The captured failure reused a 480x270 two-layer target for a 180x170 request with
+a different slice footprint. Eight focused cases include this mismatch and
+compatible 14/13-layer shadow views. The Release build and 2,610 import bindings
+passed, and transmission/loading, showroom and track checks rendered correctly.
+This does not claim to resolve every intermittent red/green defect. Only the
+layout correction is included; probes, traces and performance experiments stay local.
+## Background optimization (0073-0075)
+
+Patches 0073-0075 apply after 0072, in order (they do not depend on it). They
+were measured on a Ryzen 5 5500 (6 cores, 12 threads, no efficiency cores) with an
+RX 7600 (driver 26.8.1), in a Time Attack at Dragon Trail (`permanent_01`), using the
+renderer's own logs (PERF-031, PERF-047, NAT-100).
+
+- 0073 (PERF-310): in a race, shader translation and pipeline builds run below the
+  game's priority. On CPUs without efficiency cores PERF-097 keeps nothing apart: a
+  burst of 500-1,200 new pipelines took 3-4 threads from GT Sport's twelve job threads
+  and the recorder, and the race fell to 12-17 fps until it was done. Draws are skipped
+  while their pipeline builds (PERF-076), so compiles only take longer. Measured in two
+  races: before, 35 two-second windows with such a burst averaged 15.8 fps; after, the
+  one window with a burst ran at 41 fps.
+  `RYGT_COMPILE_PRIORITY=normal` keeps them level.
+- 0074 (PERF-314): native write-backs (NAT-112) reuse each picture's re-tiling
+  buffers. Each tiled write-back created three buffers (linear, tiled, tiling
+  parameters) about 2,600 times a second; the picture's size and tiling never change
+  and every write-back is recorded on one queue, ordered by its barriers (the last one
+  now also covers the next write-back's transfer writes). Write-back time on the
+  recorder: about 700 -> 470 ms per 10 s.
+- 0075 (PERF-316): with the native renderer, game job threads prepare draws (OPT-010/012)
+  by default instead of only with `RYGT_NATIVE_PREPARE=1` and `RYGT_NATIVE=1`; it follows
+  the launcher's renderer choice. 97.5% of draws were prepared, decoding a submission went
+  from 7.0 to 5.6 ms, and the Time Attack from 39.9 to 44.6 fps (43.5 in a second run).
+  `RYGT_NATIVE_PREPARE=0` turns it off.
+
+None of the three is specific to AMD GPUs; 0073 matters most on CPUs without
+efficiency cores, and 0075 applies wherever the native renderer is used. The four
+changed sources were compiled with the Release flags against the patched tree. The
+figures above come from the RX 7600 PC; other CPUs and GPUs were not measured.
+
+## AMD 9000 fix and automatic shader store version (0076-0080)
+
+Patches 0076-0080 apply after 0075, in order.
+
+- 0076 (FIX-215): MED3 with a quiet NaN on AMD's trinary path (`FMid3AMD`, which leaves a NaN
+  operand undefined) returns the minimum of the numeric operands, as GCN does.
+- 0077 (FIX-216): MIN3/MAX3 use `NMin`/`NMax` instead of `FMin3AMD`/`FMax3AMD`, so a NaN
+  operand is ignored as on GCN.
+- 0078 (AMD-311): `SHADGT_AMD_VERTEX_ORDER=0..5` picks which vertex `InterpolateAtVertexAMD`
+  reads for each barycentric weight of per-vertex inputs. 0 (the order an RX 7600 uses) unless set;
+  for checking other AMD GPUs.
+- 0079 (AMD-312): the GPU is detected (AMD proprietary driver and model name) and the shader
+  store version follows it. Radeon RX 9000 cards (RDNA4) use their own store version.
+- 0080 (AMD-313): Radeon RX 7000 cards (RDNA3) leave 0076/0077 out and use a store version of
+  their own; `SHADGT_AMD_NAN_RULES=0/1` overrides for any GPU.
+
+Tested by users of the local test builds: on an RX 9060 XT the road at Brands Hatch was drawn as
+streaks with a store translated by an earlier build and correctly once the store was translated
+again with these patches. On an RX 7600, freshly translated shaders with 0076/0077 drew the car
+purple again; with them off (0080) the car was right. Other GPUs were not tested.
+
+## Combined AMD shader-store integration
+
+The AMD RX 9000/RX 7000 profile and shader-store patches are combined with the existing generic MED3 correction and shader binary revisions. Patch 0076's valid implementation was restored from incoming commit f525c76 because dfda55d replaced that patch file with descriptive prose. The generic MED3 change remains in 0078; its context was narrowed so both AMD and generic paths apply.
+
+Event-start/replay patch contexts were rebased without changing their behavior. Worker scheduling retains the existing topology/memory limits and low priority for compiler workers; this supersedes PERF-310's older dynamic menu/race priority switching. Retiling-buffer reuse, background draw preparation, AMD-family store versions and profile switches are retained.
+
+Validation: the complete 0073-0083 series applies in filename order to the reconstructed baseline through 0072. The updated camera patch applies to its documented 1d13c88d base. Seven affected renderer translation units pass syntax checks and all five compiler queue/budget/lifetime tests pass. AMD hardware rendering still requires validation.
+
+## Queued fetch-shader input lifetime
+
+Patch 0084 owns bounded fetch-program snapshots before asynchronous translation is queued. Compiler workers read those snapshots instead of guest pointers that can become unmapped; synchronous fetch parsing uses guarded reads. Failed snapshots leave translation to the existing draw-time path. Pipeline ordering, required shadow waits, formats and resolution are unchanged.
+
+Validation: Release build, snapshot lifetime tests, 2,893 import bindings and the standalone image self-test passed. The AMD candidate completed two track/menu cycles without a crash. Existing rendering defects were unchanged; this is a crash-lifetime correction, not a rendering-correctness claim.
+
+## Resolution patch context repair
+
+Patches 0088?0091 are rebased onto the documented published baseline, removing context dependencies on local GPU diagnostics. Their functional changes are unchanged. The reconstructed 0073?0097 sequence was checked, with LF source normalization and strict application of the rebased/new patches.
+
+Patch 0092: [connect Native FSR reconstruction and depth aliases](NATIVE-FSR.md).
+
+Patch 0093: [provide frame generation with owned scene inputs](FRAMEGEN-SCENE-INPUTS.md).
+
+Patch 0094: [report active upscaler and working frame generation](UPSCALER-TITLE.md).
+
+Patch 0095: [supply Native frame generation with a HUD-less reference](FRAMEGEN-HUD.md).
+
+Patch 0096: [add bounded frame-generation GPU and host timing](FRAMEGEN-TIMING.md).
+
+Patch 0097: [guard low-FPS frame-generation pacing history](FRAMEGEN-LOW-FPS-PACING.md).

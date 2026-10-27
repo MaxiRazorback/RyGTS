@@ -89,6 +89,10 @@ static bool ReportConnected(int family) {
 
 extern "C" {
 
+int APS5_VABI sceNetCtlGetIfStat() {
+    return SCE_NET_CTL_ERROR_NOT_CONNECTED;
+}
+
 int APS5_VABI sceNetCtlCheckCallback(void) {
     return 0;
 }

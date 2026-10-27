@@ -1,13 +1,29 @@
 #include "prx/libc/include/FileStream.hpp"
 #include "prx/libc/include/general/VabiMacros.hpp"
 #include <cerrno>
+#include "prx/libc/include/LogFiles.hpp"
 #ifdef _WIN32
 #include <io.h>
 #else
 #include <unistd.h>
 #endif
 
-namespace { FileStream input{stdin}; }
+namespace {
+#ifndef _WIN32
+// Match the detached Windows runtime: standard C/C++ file APIs only.
+[[maybe_unused]] const bool logsInitialized = [] {
+    const auto root = std::filesystem::current_path();
+    const auto output = RuntimeLogFiles::Prepare(root, "stdout.log", true);
+    const auto error = RuntimeLogFiles::Prepare(root, "stderr.log", true);
+    if (!output.empty()) std::freopen(output.c_str(), "w", stdout);
+    if (!error.empty()) std::freopen(error.c_str(), "w", stderr);
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+    std::setvbuf(stderr, nullptr, _IONBF, 0);
+    return true;
+}();
+#endif
+FileStream input{stdin};
+}
 extern "C" {
 FileStream* __stdinp_nid_postfix = &input;
 FileStream* __stdoutp_nid_postfix = &_Stdout_nid_postfix;

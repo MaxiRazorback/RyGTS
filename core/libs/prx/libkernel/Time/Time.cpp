@@ -3,6 +3,7 @@
 
 #include "prx/libc/include/General.hpp"
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <cstdint>
 #include <cstdio>
@@ -23,6 +24,110 @@
 #include <sys/time.h>
 #endif
 
+#ifdef _WIN32
+namespace {
+constexpr std::int64_t WindowsEpochSeconds = 11644473600LL;
+struct WindowsLocalClock {
+    std::int64_t utc;
+    std::int64_t local;
+    std::int32_t standardOffset;
+    std::int32_t daylightOffset;
+};
+
+bool WindowsCalendar(std::int64_t seconds, SYSTEMTIME& calendar) {
+    // Bound the multiplication and reject dates outside Windows' FILETIME range.
+    if (seconds < -WindowsEpochSeconds || seconds > 922337203685LL - WindowsEpochSeconds) return false;
+    const auto ticks = static_cast<std::uint64_t>(seconds + WindowsEpochSeconds) * 10000000ULL;
+    const FILETIME file{static_cast<DWORD>(ticks), static_cast<DWORD>(ticks >> 32)};
+    return FileTimeToSystemTime(&file, &calendar) != FALSE;
+}
+
+bool WindowsSeconds(const SYSTEMTIME& calendar, std::int64_t& seconds) {
+    FILETIME file{};
+    if (!SystemTimeToFileTime(&calendar, &file)) return false;
+    const auto ticks = (static_cast<std::uint64_t>(file.dwHighDateTime) << 32) | file.dwLowDateTime;
+    seconds = static_cast<std::int64_t>(ticks / 10000000ULL) - WindowsEpochSeconds;
+    return true;
+}
+
+// Wine and Proton's kernel32 export neither ...Ex conversion (kernelbase only has stubs), and a
+// static import of them keeps libkernel from loading there. Look them up at run time and fall back
+// to the plain conversions with the local year's rules of the same time zone, which gives the same
+// results (checked against the ...Ex functions for every Windows time zone, 2024-2027).
+using ZoneConversion = BOOL(WINAPI*)(const DYNAMIC_TIME_ZONE_INFORMATION*, const SYSTEMTIME*, LPSYSTEMTIME);
+
+ZoneConversion KernelZoneConversion(const char* name) {
+    const HMODULE kernel = GetModuleHandleW(L"kernel32.dll");
+    return kernel ? reinterpret_cast<ZoneConversion>(reinterpret_cast<void*>(GetProcAddress(kernel, name))) : nullptr;
+}
+
+// A year's rules of the zone, cached (GetTimeZoneInformationForYear reads the registry each time).
+bool ZoneRules(DYNAMIC_TIME_ZONE_INFORMATION& zone, int year, TIME_ZONE_INFORMATION& rules) {
+    static std::mutex lock;
+    static std::wstring cachedZone;
+    static std::unordered_map<int, TIME_ZONE_INFORMATION> cache;
+    const std::wstring key = std::wstring(zone.TimeZoneKeyName) + (zone.DynamicDaylightTimeDisabled ? L"|fixed" : L"");
+    std::lock_guard guard(lock);
+    if (key != cachedZone) {
+        cache.clear();
+        cachedZone = key;
+    }
+    if (const auto found = cache.find(year); found != cache.end()) {
+        rules = found->second;
+        return true;
+    }
+    if (!GetTimeZoneInformationForYear(static_cast<USHORT>(year), &zone, &rules)) return false;
+    cache.emplace(year, rules);
+    return true;
+}
+
+bool UtcToZoneTime(DYNAMIC_TIME_ZONE_INFORMATION& zone, const SYSTEMTIME& universal, SYSTEMTIME& local) {
+    static const auto convert = KernelZoneConversion("SystemTimeToTzSpecificLocalTimeEx");
+    if (convert) return convert(&zone, &universal, &local) != FALSE;
+    TIME_ZONE_INFORMATION rules{};
+    if (!ZoneRules(zone, universal.wYear, rules) || !SystemTimeToTzSpecificLocalTime(&rules, &universal, &local)) return false;
+    // Around New Year the local year differs from the UTC year, and its rules decide.
+    return local.wYear == universal.wYear ||
+           (ZoneRules(zone, local.wYear, rules) && SystemTimeToTzSpecificLocalTime(&rules, &universal, &local));
+}
+
+bool ZoneTimeToUtc(DYNAMIC_TIME_ZONE_INFORMATION& zone, const SYSTEMTIME& local, SYSTEMTIME& universal) {
+    static const auto convert = KernelZoneConversion("TzSpecificLocalTimeToSystemTimeEx");
+    if (convert) return convert(&zone, &local, &universal) != FALSE;
+    TIME_ZONE_INFORMATION rules{};
+    return ZoneRules(zone, local.wYear, rules) && TzSpecificLocalTimeToSystemTime(&rules, &local, &universal);
+}
+
+bool WindowsClockFromUtc(std::int64_t utc, WindowsLocalClock& result) {
+    DYNAMIC_TIME_ZONE_INFORMATION zone{};
+    if (GetDynamicTimeZoneInformation(&zone) == TIME_ZONE_ID_INVALID) return false;
+    SYSTEMTIME universal{}, local{};
+    if (!WindowsCalendar(utc, universal) || !UtcToZoneTime(zone, universal, local)) return false;
+    TIME_ZONE_INFORMATION rules{};
+    if (!ZoneRules(zone, local.wYear, rules)) return false;
+    std::int64_t localSeconds{};
+    if (!WindowsSeconds(local, localSeconds)) return false;
+    const auto standard = static_cast<std::int32_t>(-(rules.Bias + rules.StandardBias) * 60);
+    result = {utc, localSeconds, standard, static_cast<std::int32_t>(localSeconds - utc - standard)};
+    return true;
+}
+
+bool WindowsClockFromLocal(std::int64_t local, WindowsLocalClock& result) {
+    DYNAMIC_TIME_ZONE_INFORMATION zone{};
+    if (GetDynamicTimeZoneInformation(&zone) == TIME_ZONE_ID_INVALID) return false;
+    SYSTEMTIME calendar{}, universal{};
+    std::int64_t utc{};
+    if (!WindowsCalendar(local, calendar) || !ZoneTimeToUtc(zone, calendar, universal) ||
+        !WindowsSeconds(universal, utc)) return false;
+    return WindowsClockFromUtc(utc, result);
+}
+
+KernelTimezone WindowsGuestTimezone(const WindowsLocalClock& clock) {
+    // The guest ABI reports signed UTC-to-local minutes, plus DST minutes separately.
+    return {clock.standardOffset / 60, clock.daylightOffset / 60};
+}
+}
+#endif
 static std::uint64_t RawMonotonicNanos() {
 #ifdef _WIN32
     return TimedWait::NowNanos();
@@ -57,8 +162,59 @@ static std::uint64_t GetMonotonicNanos() {
     return origin + static_cast<std::uint64_t>(static_cast<double>(raw - origin) * TimeScale());
 }
 
+#ifdef _WIN32
+// The shadGT renderer (libSceVideoOut.prx) holds the guest clocks while its GPU thread compiles
+// shaders or pipelines, which a PS4 never does (its shaders are precompiled). Its RytyGpuGuestTsc
+// export is the host TSC with those pauses taken out. Without it a compile stall looks like a frame
+// hundreds of milliseconds long to the game: GT Sport's car thumbnail script polls its shot after one
+// 0.1 s sleep, finds nothing, and asserts (file_size > 10 * 1024) when a new car is bought.
+using GuestTscFn = std::uint64_t (*)();
+
+static GuestTscFn RendererGuestTsc() {
+    static std::atomic<GuestTscFn> found{nullptr};
+    static std::atomic<std::uint32_t> misses{0};
+    GuestTscFn fn = found.load(std::memory_order_acquire);
+    if (fn != nullptr) return fn;
+    // Looked up again now and then until the renderer is loaded (it loads before the game starts).
+    if ((misses.fetch_add(1, std::memory_order_relaxed) & 4095) != 0) return nullptr;
+    if (std::getenv("APS5_NO_GUEST_CLOCK") != nullptr) return nullptr;
+    if (HMODULE renderer = GetModuleHandleA("libSceVideoOut.prx")) {
+        fn = reinterpret_cast<GuestTscFn>(reinterpret_cast<void*>(GetProcAddress(renderer, "RytyGpuGuestTsc")));
+        if (fn != nullptr) found.store(fn, std::memory_order_release);
+    }
+    return fn;
+}
+
+extern "C" uint64_t APS5_VABI sceKernelGetTscFrequency(void);
+
+// The game's monotonic nanoseconds: the renderer's guest TSC when it provides one (continuing from
+// the host clock at the moment it was found), else the host clock. Never goes backwards.
+static std::uint64_t GuestMonotonicNanos() {
+    const GuestTscFn guestTsc = RendererGuestTsc();
+    if (guestTsc == nullptr) return GetMonotonicNanos();
+    struct Base {
+        std::uint64_t nanos, tsc, frequency;
+    };
+    static const Base base = [&] {
+        const std::uint64_t frequency = sceKernelGetTscFrequency();
+        return Base{GetMonotonicNanos(), guestTsc(), frequency};
+    }();
+    const std::uint64_t ticks = guestTsc() - base.tsc;
+    const std::uint64_t nanos = base.nanos + static_cast<std::uint64_t>(static_cast<unsigned __int128>(ticks) * 1000000000ULL / base.frequency);
+    static std::atomic<std::uint64_t> last{0};
+    std::uint64_t previous = last.load(std::memory_order_relaxed);
+    while (nanos > previous && !last.compare_exchange_weak(previous, nanos, std::memory_order_relaxed)) {
+    }
+    return std::max(nanos, previous);
+}
+#else
+static std::uint64_t GuestMonotonicNanos() {
+    return GetMonotonicNanos();
+}
+#endif
+
 static std::uint64_t GetStartNanos() {
-    static const std::uint64_t start = GetMonotonicNanos();
+    static const std::uint64_t start = GuestMonotonicNanos();
     return start;
 }
 
@@ -141,11 +297,11 @@ static const bool g_timerSelfTest = [] {
 extern "C" {
 
 std::uint64_t APS5_VABI sceKernelGetProcessTime() {
-    return (GetMonotonicNanos() - GetStartNanos()) / 1000ULL;
+    return (GuestMonotonicNanos() - GetStartNanos()) / 1000ULL;
 }
 
 std::uint64_t APS5_VABI sceKernelGetProcessTimeCounter() {
-    return GetMonotonicNanos() - GetStartNanos();
+    return GuestMonotonicNanos() - GetStartNanos();
 }
 
 std::uint64_t APS5_VABI sceKernelGetProcessTimeCounterFrequency() {
@@ -177,7 +333,78 @@ static void TraceSleep(const void* caller, std::uint64_t microseconds) {
     std::fprintf(stderr, "\n");
 }
 
+extern "C++" {
+
+#ifdef _WIN32
+using DiagRecordFn = void (*)(std::uint32_t, std::uint64_t, std::uint64_t);
+
+static DiagRecordFn RendererDiag() {
+    static std::atomic<DiagRecordFn> found{nullptr};
+    static std::atomic<std::uint32_t> misses{0};
+    DiagRecordFn fn = found.load(std::memory_order_acquire);
+    if (fn != nullptr) return fn;
+    if ((misses.fetch_add(1, std::memory_order_relaxed) & 1023) != 0) return nullptr;
+    if (HMODULE renderer = GetModuleHandleA("libSceVideoOut.prx")) {
+        fn = reinterpret_cast<DiagRecordFn>(reinterpret_cast<void*>(GetProcAddress(renderer, "RyGtDiagRecordNs")));
+        if (fn != nullptr) found.store(fn, std::memory_order_release);
+    }
+    return fn;
+}
+#endif
+
+bool KernelDiagEnabled() {
+#ifdef _WIN32
+    static const bool enabled = [] {
+        const char* env = std::getenv("RYGT_DIAG");
+        return env != nullptr && env[0] == '1';
+    }();
+    return enabled;
+#else
+    return false;
+#endif
+}
+
+void KernelDiagRecord(KernelDiagZone zone, std::uint64_t nanos, const void* caller) {
+#ifdef _WIN32
+    if (!KernelDiagEnabled()) return;
+    if (const DiagRecordFn fn = RendererDiag()) {
+        static const auto image = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
+        const auto address = reinterpret_cast<std::uintptr_t>(caller);
+        fn(static_cast<std::uint32_t>(zone), nanos, address > image ? address - image : address);
+    }
+#endif
+}
+
+void KernelDiagMark(KernelDiagZone zone, std::uint64_t arg) {
+#ifdef _WIN32
+    if (!KernelDiagEnabled()) return;
+    if (const DiagRecordFn fn = RendererDiag()) fn(static_cast<std::uint32_t>(zone), 0, arg);
+#else
+    (void)zone;
+    (void)arg;
+#endif
+}
+
+std::uint64_t KernelDiagWaker(const void* caller) {
+#ifdef _WIN32
+    static const auto image = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
+    const auto address = reinterpret_cast<std::uintptr_t>(caller);
+    const std::uint64_t offset = address > image && address - image < 0xFFFFFFFFull ? address - image : 0;
+    return (static_cast<std::uint64_t>(GetCurrentThreadId()) << 32) | offset;
+#else
+    (void)caller;
+    return 0;
+#endif
+}
+
+}  // extern "C++"
+
 void KernelTraceWait_nid_postfix(const char* kind, const void* caller, std::uint64_t waitedNanos, bool timedOut) {
+    if (KernelDiagEnabled()) {
+        const KernelDiagZone zone = kind[0] == 'e' ? (kind[1] == 'q' ? KernelDiagZone::Equeue : KernelDiagZone::EventFlag)
+                                  : kind[0] == 's' ? KernelDiagZone::Sema : KernelDiagZone::Cond;
+        KernelDiagRecord(zone, waitedNanos, caller);
+    }
     static const bool enabled = std::getenv("APS5_TRACE_WAITS") != nullptr;
     if (!enabled) return;
     struct Site { std::uint64_t calls = 0; std::uint64_t timeouts = 0; std::uint64_t nanos = 0; std::uint64_t longest = 0; unsigned long lastThread = 0; };
@@ -217,6 +444,7 @@ void KernelTraceWait_nid_postfix(const char* kind, const void* caller, std::uint
 
 int APS5_VABI sceKernelUsleep_nid_postfix(KernelUseconds microseconds) {
     TraceSleep(__builtin_return_address(0), microseconds);
+    KernelDiagScope diag(KernelDiagZone::Sleep, __builtin_return_address(0));
     TimedWait::SleepNanos(static_cast<std::uint64_t>(microseconds) * 1000ULL);
     return 0;
 }
@@ -228,6 +456,7 @@ int APS5_VABI sceKernelNanosleep(const KernelTimespec* rqtp, KernelTimespec* rmt
     if (rqtp->tv_sec < 0 || rqtp->tv_nsec < 0 || rqtp->tv_nsec >= 1000000000LL) {
         return -1;
     }
+    KernelDiagScope diag(KernelDiagZone::Sleep, __builtin_return_address(0));
     TimedWait::SleepNanos(static_cast<std::uint64_t>(rqtp->tv_sec) * 1000000000ULL +
                           static_cast<std::uint64_t>(rqtp->tv_nsec));
     if (rmtp != nullptr) {
@@ -246,6 +475,7 @@ int APS5_VABI _nanosleep_nid_postfix(const KernelTimespec* rqtp, KernelTimespec*
 }
 
 int APS5_VABI usleep_nid_postfix(KernelUseconds microseconds) {
+    KernelDiagScope diag(KernelDiagZone::Sleep, __builtin_return_address(0));
     TimedWait::SleepNanos(static_cast<std::uint64_t>(microseconds) * 1000ULL);
     return 0;
 }
@@ -276,7 +506,7 @@ int APS5_VABI clock_gettime_nid_postfix(int clockId, KernelTimespec* tp) {
         return 0;
     }
     if (clockId == 4 || clockId == 1 || clockId == 5 || clockId == 7 || clockId == 8 || clockId == 11 || clockId == 12) {
-        std::uint64_t nanos = GetMonotonicNanos();
+        std::uint64_t nanos = GuestMonotonicNanos();
         tp->tv_sec = static_cast<std::int64_t>(nanos / 1000000000ULL);
         tp->tv_nsec = static_cast<std::int64_t>(nanos % 1000000000ULL);
         return 0;
@@ -346,8 +576,14 @@ int APS5_VABI gettimeofday_nid_postfix(KernelTimeval* tv, KernelTimezone* tz) {
     tv->tv_usec = static_cast<std::int64_t>(native.tv_usec);
 #endif
     if (tz != nullptr) {
+#ifdef _WIN32
+        WindowsLocalClock clock{};
+        if (!WindowsClockFromUtc(tv->tv_sec, clock)) { errno = EINVAL; return -1; }
+        *tz = WindowsGuestTimezone(clock);
+#else
         tz->tz_minuteswest = 0;
         tz->tz_dsttime = 0;
+#endif
     }
     return 0;
 }
@@ -422,8 +658,7 @@ int APS5_VABI clock_getres_nid_postfix(int clockId, KernelTimespec* res) {
 // Moved as-is (not yet implemented) from the monolithic libkernel/Export.cpp.
 // ---------------------------------------------------------------------------
 
-// The sce* clock calls share the POSIX implementations above. The console clock is kept in UTC:
-// the time zone reported here and by gettimeofday has no offset and no daylight saving.
+// Wall-clock timestamps remain UTC. Windows local-time conversions follow the host time zone.
 static constexpr int SceKernelErrorEfault = static_cast<int>(0x8002000e);
 
 int APS5_VABI sceKernelClockGetres(KernelClockid clock_id, KernelTimespec* tp) {
@@ -438,16 +673,32 @@ int APS5_VABI sceKernelClockGettime(KernelClockid clock_id, KernelTimespec* tp) 
 
 int APS5_VABI sceKernelConvertLocaltimeToUtc(int64_t local_time, int64_t reserved, int64_t* utc_time, KernelTimezone* timezone, int32_t* dst_seconds) {
     (void)reserved;
+#ifdef _WIN32
+    WindowsLocalClock clock{};
+    if (!WindowsClockFromLocal(local_time, clock)) return static_cast<int>(0x80020016);
+    if (utc_time != nullptr) *utc_time = clock.utc;
+    if (timezone != nullptr) *timezone = WindowsGuestTimezone(clock);
+    if (dst_seconds != nullptr) *dst_seconds = clock.daylightOffset;
+#else
     if (utc_time != nullptr) *utc_time = local_time;
     if (timezone != nullptr) *timezone = {0, 0};
     if (dst_seconds != nullptr) *dst_seconds = 0;
+#endif
     return 0;
 }
 
 int APS5_VABI sceKernelConvertUtcToLocaltime(int64_t utc_time, int64_t* local_time, KernelTimesec* st, uint64_t* dst_sec) {
+#ifdef _WIN32
+    WindowsLocalClock clock{};
+    if (!WindowsClockFromUtc(utc_time, clock)) return static_cast<int>(0x80020016);
+    if (local_time != nullptr) *local_time = clock.local;
+    if (st != nullptr) *st = {utc_time, static_cast<std::uint32_t>(clock.standardOffset), static_cast<std::uint32_t>(clock.daylightOffset)};
+    if (dst_sec != nullptr) *dst_sec = static_cast<std::uint64_t>(clock.daylightOffset);
+#else
     if (local_time != nullptr) *local_time = utc_time;
     if (st != nullptr) *st = {utc_time, 0u, 0u};
     if (dst_sec != nullptr) *dst_sec = 0;
+#endif
     return 0;
 }
 
@@ -458,11 +709,19 @@ int APS5_VABI sceKernelGettimeofday(KernelTimeval* tp) {
 
 int APS5_VABI sceKernelGettimezone(KernelTimezone* tz) {
     if (tz == nullptr) return SceKernelErrorEfault;
+#ifdef _WIN32
+    KernelTimeval now{};
+    if (gettimeofday_nid_postfix(&now, tz) != 0) return static_cast<int>(0x80020016);
+#else
     *tz = {0, 0};
+#endif
     return 0;
 }
 
 uint64_t APS5_VABI sceKernelReadTsc(void) {
+#ifdef _WIN32
+    if (const GuestTscFn guestTsc = RendererGuestTsc()) return guestTsc();
+#endif
     if (TimeScale() == 1.0) return __rdtsc();
     static const std::uint64_t origin = __rdtsc();
     return origin + static_cast<std::uint64_t>(static_cast<double>(__rdtsc() - origin) * TimeScale());

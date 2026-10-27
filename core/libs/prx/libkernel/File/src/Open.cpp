@@ -5,9 +5,15 @@
 #include "prx/libkernel/File/include/DirectoryDescriptor.hpp"
 #include "prx/libkernel/KernelErrors.hpp"
 #include "SceTypes.hpp"
+#include "prx/libkernel/Time/include/Time.hpp"
 
+#include "prx/libkernel/File/include/HddStreaming.hpp"
+#include <atomic>
 #include <cerrno>
+#include <cstdio>
+#include <cstring>
 #include <limits>
+#include <vector>
 #include <stdexcept>
 #include <string>
 
@@ -107,6 +113,26 @@ void PrepareGuestWrite(void* buffer, std::size_t bytes) {
 #endif
 }
 
+std::int64_t ReadIntoGuest(void* buffer, std::size_t bytes, const std::function<std::int64_t(void*)>& read) {
+    PrepareGuestWrite(buffer, bytes);
+    const std::int64_t n = read(buffer);
+    if (n >= 0 || buffer == nullptr || bytes == 0) return n;
+    const int error = errno;
+    std::vector<char> bounce(bytes);
+    const std::int64_t retried = read(bounce.data());
+    if (retried < 0) {
+        errno = error;
+        return n;
+    }
+    static std::atomic<unsigned> logged{0};
+    if (logged.fetch_add(1) < 10) {
+        std::fprintf(stderr, "[file] read into %p (%zu bytes) failed (errno %d); read again through a host buffer\n",
+                     buffer, bytes, error);
+    }
+    std::memcpy(buffer, bounce.data(), static_cast<std::size_t>(retried));
+    return retried;
+}
+
 static int SceErrorFromErrno(int error) {
     constexpr int GuestEio = 5;
     const int guest = error > 0 && error <= 34 ? error : GuestEio;
@@ -116,9 +142,18 @@ static int SceErrorFromErrno(int error) {
 extern "C" {
 
 int APS5_VABI sceKernelOpen(const char* path, int flags, std::uint16_t mode) {
-    APS5_LOG_OUT("path=%s flags=0x%X nativeFlags=0x%X mode=0%o", path, flags, MapFlags(flags), mode);
+    APS5_LOG_TRACE("path=%s flags=0x%X nativeFlags=0x%X mode=0%o", path, flags, MapFlags(flags), mode);
     auto native = ResolvePath_nid_no_patch(path);
-    int fd = NativeOpen(native, MapFlags(flags), mode);
+    int nativeFlags = MapFlags(flags);
+#ifdef _WIN32
+    if (File::HddStreamingEnabled() && File::IsStreamingGamePath(path) &&
+        (flags & SCE_KERNEL_O_ACCMODE) == SCE_KERNEL_O_RDONLY &&
+        !(flags & (SCE_KERNEL_O_CREAT | SCE_KERNEL_O_TRUNC | SCE_KERNEL_O_APPEND |
+                   SCE_KERNEL_O_DIRECT | SCE_KERNEL_O_DIRECTORY))) {
+        nativeFlags |= _O_SEQUENTIAL;
+    }
+#endif
+    int fd = NativeOpen(native, nativeFlags, mode);
 #ifdef _WIN32
     if (fd < 0 && errno != ENOENT) {
         std::error_code error;
@@ -145,8 +180,8 @@ std::int64_t APS5_VABI sceKernelRead(int d, void* buf, std::size_t nbytes) {
     if (buf == nullptr) {
         throw std::invalid_argument(std::string(__func__) + ": buf is null");
     }
-    PrepareGuestWrite(buf, nbytes);
-    auto n = NativeRead(d, buf, nbytes);
+    KernelDiagScope diag(KernelDiagZone::FileRead, __builtin_return_address(0));
+    auto n = ReadIntoGuest(buf, nbytes, [&](void* target) -> std::int64_t { return NativeRead(d, target, nbytes); });
     if (n < 0) {
         throw std::runtime_error(std::string(__func__) + ": read failed, fd=" + std::to_string(d) + ", errno=" + std::to_string(errno));
     }
@@ -175,6 +210,27 @@ std::int64_t APS5_VABI sceKernelLseek(int d, std::int64_t offset, int whence) {
     return result;
 }
 
+// DIAG-164 (RyGT): GT Sport checks for app0\gt.idx at start; without it the game runs without its data
+// and closes right after the splash screen with nothing else in the logs. The first 20 app0 files
+// a title looks for and can't find are reported, with the folder that was searched.
+static void ReportMissingAppFile(const char* path, const std::filesystem::path& native, const std::error_code& error) {
+    static std::atomic<unsigned> reported{0};
+    if (std::strncmp(path, "/app0/", 6) != 0 || reported.fetch_add(1) >= 20) return;
+#ifdef _WIN32
+    const auto wide = native.wstring();
+    std::string text;
+    const int size = WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    if (size > 1) {
+        text.resize(static_cast<std::size_t>(size - 1));
+        WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), -1, text.data(), size, nullptr, nullptr);
+    }
+#else
+    const std::string text = native.string();
+#endif
+    std::fprintf(stderr, "[file] %s is missing (looked for %s%s%s)\n", path, text.c_str(), error ? ": " : "",
+                 error ? error.message().c_str() : "");
+}
+
 int APS5_VABI sceKernelStat(const char* path, FileStat* sb) {
     if (path == nullptr) {
         throw std::invalid_argument(std::string(__func__) + ": path is null");
@@ -185,6 +241,7 @@ int APS5_VABI sceKernelStat(const char* path, FileStat* sb) {
     const auto native = ResolvePath_nid_no_patch(path);
     std::error_code error;
     if (!std::filesystem::exists(native, error)) {
+        ReportMissingAppFile(path, native, error);
         return SceErrorFromErrno(2);
     }
     File::FillFileStat(native, sb);

@@ -130,7 +130,9 @@ public:
 
 private:
     Watch() {
-        if (std::getenv("APS5_NO_WRITE_WATCH") == nullptr) open();
+        // RyGT: opt-in (APS5_WRITE_WATCH=1), as on Windows.
+        const char* enabled = std::getenv("APS5_WRITE_WATCH");
+        if (std::getenv("APS5_NO_WRITE_WATCH") == nullptr && enabled && std::strcmp(enabled, "1") == 0) open();
     }
 
     void open() {

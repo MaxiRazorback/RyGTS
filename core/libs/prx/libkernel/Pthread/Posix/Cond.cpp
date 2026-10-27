@@ -25,7 +25,7 @@ int APS5_VABI pthread_cond_destroy_nid_postfix(PthreadCond* cond) {
 }
 
 int APS5_VABI pthread_cond_broadcast_nid_postfix(PthreadCond* cond) {
-    return toPosix(scePthreadCondBroadcast(cond));
+    return toPosix(CondOperations::Signal(cond, true, __builtin_return_address(0)));
 }
 
 int APS5_VABI pthread_cond_init_nid_postfix(PthreadCond* cond, const PthreadCondattr* attr) {
@@ -33,7 +33,7 @@ int APS5_VABI pthread_cond_init_nid_postfix(PthreadCond* cond, const PthreadCond
 }
 
 int APS5_VABI pthread_cond_signal_nid_postfix(PthreadCond* cond) {
-    return toPosix(scePthreadCondSignal(cond));
+    return toPosix(CondOperations::Signal(cond, false, __builtin_return_address(0)));
 }
 
 int APS5_VABI pthread_cond_timedwait_nid_postfix(PthreadCond* cond, PthreadMutex* mutex, const KernelTimespec* abstime) {

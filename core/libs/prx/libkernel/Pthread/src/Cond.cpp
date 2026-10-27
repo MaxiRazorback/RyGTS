@@ -63,6 +63,7 @@ int waitUntil(PthreadCond* cond, PthreadMutex* mutex, std::optional<std::uint64_
         m->_owner.store(std::thread::id{}, std::memory_order_release);
         if (deadlineNanos) timedOut = !c->_cv.WaitUntil(lock, *deadlineNanos);
         else c->_cv.Wait(lock);
+        if (!timedOut && KernelDiagEnabled()) KernelDiagMark(KernelDiagZone::CondWoken, c->_last_signal.load(std::memory_order_relaxed));
         m->_owner.store(std::this_thread::get_id(), std::memory_order_release);
         m->_count = previousCount;
         lock.release();
@@ -72,11 +73,20 @@ int waitUntil(PthreadCond* cond, PthreadMutex* mutex, std::optional<std::uint64_
     m->_owner.store(std::thread::id{}, std::memory_order_release);
     if (deadlineNanos) timedOut = !c->_cv.WaitUntil(lock, *deadlineNanos);
     else c->_cv.Wait(lock);
+    if (!timedOut && KernelDiagEnabled()) KernelDiagMark(KernelDiagZone::CondWoken, c->_last_signal.load(std::memory_order_relaxed));
     m->_owner.store(std::this_thread::get_id(), std::memory_order_release);
     lock.release();
     return timedOut ? sceTimedOut : 0;
 }
 
+}
+
+int CondOperations::Signal(PthreadCond* cond, bool all, const void* caller) {
+    auto* c = resolveCond(cond);
+    if (KernelDiagEnabled()) c->_last_signal.store(KernelDiagWaker(caller), std::memory_order_relaxed);
+    if (all) c->_cv.NotifyAll();
+    else c->_cv.NotifyOne();
+    return 0;
 }
 
 int CondOperations::AbsoluteTimedwait(PthreadCond* cond, PthreadMutex* mutex, const KernelTimespec* abstime) {
@@ -135,13 +145,11 @@ int APS5_VABI scePthreadCondDestroy(PthreadCond* cond) {
 }
 
 int APS5_VABI scePthreadCondSignal(PthreadCond* cond) {
-    resolveCond(cond)->_cv.NotifyOne();
-    return 0;
+    return CondOperations::Signal(cond, false, __builtin_return_address(0));
 }
 
 int APS5_VABI scePthreadCondBroadcast(PthreadCond* cond) {
-    resolveCond(cond)->_cv.NotifyAll();
-    return 0;
+    return CondOperations::Signal(cond, true, __builtin_return_address(0));
 }
 
 int APS5_VABI scePthreadCondSignalto(PthreadCond* cond, Pthread thread) {

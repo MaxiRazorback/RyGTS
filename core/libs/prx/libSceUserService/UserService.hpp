@@ -11,6 +11,6 @@ constexpr int USER_SERVICE_USER_ID_INVALID = -1;
 constexpr int USER_SERVICE_INITIAL_USER_ID = 0x10000000;
 constexpr int USER_SERVICE_ERROR_BUFFER_TOO_SHORT = -2137653238;
 constexpr std::size_t USER_SERVICE_MAX_USER_NAME_LENGTH = 16;
-constexpr const char* USER_SERVICE_INITIAL_USER_NAME = "Player";
+constexpr const char* USER_SERVICE_USER_NAME_ENV = "RYGT_USER_NAME";
 
 #endif

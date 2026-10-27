@@ -1,0 +1,28 @@
+diff --git a/src/common/logging/log.cpp b/src/common/logging/log.cpp
+index 9285594..ebc10c1 100644
+--- a/src/common/logging/log.cpp
++++ b/src/common/logging/log.cpp
+@@ -68,6 +68,10 @@ void VLog(Class log_class, Level level, const char* file, int line, const char*
+     if (!logger) {
+         return;
+     }
++#ifdef RYTY_GPU
++    // RyGT exposes a single Error level for error and critical diagnostics.
++    if (level == Level::Critical) level = Level::Error;
++#endif
+     fmt::memory_buffer msg;
+     fmt::vformat_to(fmt::appender(msg), format, args);
+     const std::string_view fn = std::string_view(func) == "operator()" ? "lambda" : func;
+diff --git a/src/common/logging/stdout_level.h b/src/common/logging/stdout_level.h
+index 2f1ae7f..47241dc 100644
+--- a/src/common/logging/stdout_level.h
++++ b/src/common/logging/stdout_level.h
+@@ -9,7 +9,7 @@
+ namespace Common::Log::StdoutLevel {
+ inline constexpr unsigned Warning = 3;
+ inline constexpr unsigned Default = 4;
+-inline constexpr std::array<std::string_view, 6> Names{"Trace", "Debug", "Info", "Warning", "Error", "Critical"};
++inline constexpr std::array<std::string_view, 5> Names{"Trace", "Debug", "Info", "Warning", "Error"};
+ 
+ inline std::string_view Trim(std::string_view text) {
+     const auto first = text.find_first_not_of(" \t\r\n");

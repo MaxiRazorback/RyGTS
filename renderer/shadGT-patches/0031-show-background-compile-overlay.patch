@@ -1,0 +1,63 @@
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+@@ -2,6 +2,7 @@
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+ #include <algorithm>
++#include <atomic>
+ #include <array>
+ #include <condition_variable>
+ #include <cstring>
+@@ -53,6 +54,21 @@
+ } // namespace Shader::Optimization
+ namespace Vulkan {
+ 
++namespace {
++std::atomic<u32> g_shader_translations_running{};
++struct TranslationActivity {
++    TranslationActivity() { g_shader_translations_running.fetch_add(1, std::memory_order_relaxed); }
++    ~TranslationActivity() { g_shader_translations_running.fetch_sub(1, std::memory_order_relaxed); }
++    TranslationActivity(const TranslationActivity&) = delete;
++    TranslationActivity& operator=(const TranslationActivity&) = delete;
++};
++} // namespace
++
++bool CompilationInProgress() {
++    return PipelineBuildsRunning() != 0 ||
++           g_shader_translations_running.load(std::memory_order_relaxed) != 0;
++}
++
+ class PipelineCache::TranslateWorkers {
+ public:
+     TranslateWorkers(const Shader::Profile& profile_, vk::Device device_, u32 count)
+@@ -102,6 +118,7 @@
+     }
+ 
+     void Translate(TranslateJob& job, Shader::Pools& pools) {
++        TranslationActivity activity;
+         const Shader::ShaderParams params{
+             .user_data = std::span<const u32, Shader::ShaderParams::NumShaderUserData>{job.user_data},
+             .code = job.code,
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.h
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.h
+@@ -81,6 +81,8 @@
+ bool CompileSlowMotion();
+ /// FIX-104: pipeline creations in progress.
+ u32 PipelineBuildsRunning();
++/// Active shader translation or driver pipeline compilation, independent of guest-clock holds.
++bool CompilationInProgress();
+ 
+ class PipelineCache {
+ public:
+--- a/ryty_gpu/ryty_entry.cpp
++++ b/ryty_gpu/ryty_entry.cpp
+@@ -190,7 +190,8 @@
+     static Clock::time_point paused_since{};
+     static Clock::time_point last_paused{};
+     const auto now = Clock::now();
+-    if (Common::GuestClock::IsPaused() || Vulkan::CompileSlowMotion()) {
++    if (Common::GuestClock::IsPaused() || Vulkan::CompileSlowMotion() ||
++        Vulkan::CompilationInProgress()) {
+         if (paused_since == Clock::time_point{} || now - last_paused > std::chrono::milliseconds{300}) {
+             paused_since = now;
+         }

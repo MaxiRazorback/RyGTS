@@ -1,0 +1,85 @@
+From 9a2dbff73bf32b2ea4a6f33d857f43e925d9eaf9 Mon Sep 17 00:00:00 2001
+From: mlgprorektm8 <67933lance@gmail.com>
+Date: Tue, 13 Oct 2026 19:49:31 -0500
+Subject: [PATCH] ryGT: splash screen shows while the game waits for the
+ precompile (hotfix)
+
+While the game waited on the splash screen for the shader precompile, nothing was drawn (no
+game frame existed yet to show again), so the screen stayed black. A blank frame, which shows
+the splash screen and the progress bar, is drawn until the game shows its first frame.
+Presenter::last_submit_frame is now initialized.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/core/libraries/videoout/driver.cpp        |  8 ++++++--
+ src/core/libraries/videoout/driver.h          |  2 +-
+ src/video_core/renderer_vulkan/vk_presenter.h | 10 +++++++++-
+ 3 files changed, 16 insertions(+), 4 deletions(-)
+
+diff --git a/src/core/libraries/videoout/driver.cpp b/src/core/libraries/videoout/driver.cpp
+index 431f9405..d896decc 100644
+--- a/src/core/libraries/videoout/driver.cpp
++++ b/src/core/libraries/videoout/driver.cpp
+@@ -338,11 +338,13 @@ void VideoOutDriver::DrawBlankFrame() {
+     presenter->Present(empty_frame, false, false);
+ }
+ 
+-void VideoOutDriver::DrawLastFrame() {
++bool VideoOutDriver::DrawLastFrame() {
+     const auto frame = presenter->PrepareLastFrame();
+     if (frame != nullptr) {
+         presenter->Present(frame, true);
++        return true;
+     }
++    return false;
+ }
+ 
+ bool VideoOutDriver::SubmitFlip(VideoOutPort* port, s32 index, s64 flip_arg,
+@@ -427,7 +429,9 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
+             // shown again, with the compile notice drawn over it (PERF-102: or the splash
+             // screen, before the game's first frame).
+             if (timer.GetTotalWait().count() < 0) {
+-                if (!main_port.is_open) {
++                // Before the game's first frame a blank frame, which shows the splash screen
++                // and the precompile bar; after it the last frame (skipped while it is taken).
++                if (!main_port.is_open || !presenter->HasLastFrame()) {
+                     DrawBlankFrame();
+                 } else {
+                     DrawLastFrame();
+diff --git a/src/core/libraries/videoout/driver.h b/src/core/libraries/videoout/driver.h
+index 2776e5e2..e1633371 100644
+--- a/src/core/libraries/videoout/driver.h
++++ b/src/core/libraries/videoout/driver.h
+@@ -113,7 +113,7 @@ private:
+ 
+     void Flip(const Request& req);
+     void DrawBlankFrame(); // Video port out not open
+-    void DrawLastFrame();  // Used when there is no flip request
++    bool DrawLastFrame();  // Used when there is no flip request
+     void SubmitFlipInternal(VideoOutPort* port, s32 index, s64 flip_arg, bool is_eop = false);
+     void PresentThread(std::stop_token token);
+ 
+diff --git a/src/video_core/renderer_vulkan/vk_presenter.h b/src/video_core/renderer_vulkan/vk_presenter.h
+index 565f378c..b19a4d81 100644
+--- a/src/video_core/renderer_vulkan/vk_presenter.h
++++ b/src/video_core/renderer_vulkan/vk_presenter.h
+@@ -139,7 +139,15 @@ private:
+     vk::UniqueCommandPool command_pool;
+     std::vector<Frame> present_frames;
+     std::queue<Frame*> free_queue;
+-    Frame* last_submit_frame;
++    Frame* last_submit_frame{};
++
++public:
++    /// True once a frame has been shown (it can be shown again).
++    bool HasLastFrame() const {
++        return last_submit_frame != nullptr;
++    }
++
++private:
+     /// PERF-100: the last frame shown again, taken out of the free queue meanwhile, so the GPU
+     /// thread cannot take it for a new frame (and reset its fence) while it is redrawn.
+     Frame* reusing_frame{};
+-- 
+2.56.0.windows.1
+

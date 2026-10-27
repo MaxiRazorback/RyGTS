@@ -50,3 +50,9 @@ __pycache__/
 *~
 .DS_Store
 Thumbs.db
+
+/.ci-renderer/
+/artifacts/
+/converter-tests.xml
+/dist/
+/.ci-runtime-base.zip

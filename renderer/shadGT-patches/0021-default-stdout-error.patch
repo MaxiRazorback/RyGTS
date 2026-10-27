@@ -1,0 +1,42 @@
+From 7396d22999a5ef94919150c557aada6689270b92 Mon Sep 17 00:00:00 2001
+From: xacidr4inx <xacidr4inx@users.noreply.github.com>
+Date: Sun, 18 Oct 2026 20:35:21 -0400
+Subject: [PATCH] Default stdout logging to Error
+
+---
+ src/common/logging/stdout_level.h | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/src/common/logging/stdout_level.h b/src/common/logging/stdout_level.h
+index d71b139..2f1ae7f 100644
+--- a/src/common/logging/stdout_level.h
++++ b/src/common/logging/stdout_level.h
+@@ -8,6 +8,7 @@
+ 
+ namespace Common::Log::StdoutLevel {
+ inline constexpr unsigned Warning = 3;
++inline constexpr unsigned Default = 4;
+ inline constexpr std::array<std::string_view, 6> Names{"Trace", "Debug", "Info", "Warning", "Error", "Critical"};
+ 
+ inline std::string_view Trim(std::string_view text) {
+@@ -25,7 +26,7 @@ inline unsigned Parse(std::string_view text) {
+                      std::tolower(static_cast<unsigned char>(Names[level][i]));
+         if (equal) return level;
+     }
+-    return Warning;
++    return Default;
+ }
+ 
+ inline unsigned Read(const std::filesystem::path& ini) {
+@@ -36,7 +37,7 @@ inline unsigned Read(const std::filesystem::path& ini) {
+         if (separator != std::string::npos && Trim(std::string_view(line).substr(0, separator)) == "stdout_level")
+             return Parse(std::string_view(line).substr(separator + 1));
+     }
+-    return Warning;
++    return Default;
+ }
+ 
+ inline bool Enabled(unsigned message, unsigned minimum) { return message >= minimum; }
+-- 
+2.55.0.windows.5
+

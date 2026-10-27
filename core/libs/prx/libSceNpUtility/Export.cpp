@@ -38,3 +38,47 @@ int APS5_VABI sceNpBandwidthTestShutdown(int context_id, void* result) {
 }
 
 }
+
+// Friend-list dialog compatibility exports; network-backed dialog is offline.
+extern "C" {
+int APS5_VABI sceNpFriendListDialogClose() { return 0; }
+int APS5_VABI sceNpFriendListDialogGetResult() { return 0; }
+int APS5_VABI sceNpFriendListDialogGetResultA() { return 0; }
+int APS5_VABI sceNpFriendListDialogGetStatus() { return 0; }
+int APS5_VABI sceNpFriendListDialogInitialize() { return 0; }
+int APS5_VABI sceNpFriendListDialogOpen() { return 0; }
+int APS5_VABI sceNpFriendListDialogOpenA() { return 0; }
+int APS5_VABI sceNpFriendListDialogTerminate() { return 0; }
+int APS5_VABI sceNpFriendListDialogUpdateStatus() { return 0; }
+}
+
+
+// In-game message network service is offline.
+extern "C" {
+int APS5_VABI sceNpInGameMessageAbortHandle() { return 0; }
+int APS5_VABI sceNpInGameMessageCheckCallback() { return 0; }
+int APS5_VABI sceNpInGameMessageCreateHandle() { return 0; }
+int APS5_VABI sceNpInGameMessageDeleteHandle() { return 0; }
+int APS5_VABI sceNpInGameMessageGetMemoryPoolStatistics() { return 0; }
+int APS5_VABI sceNpInGameMessageInitialize() { return 0; }
+int APS5_VABI sceNpInGameMessagePrepare() { return 0; }
+int APS5_VABI sceNpInGameMessagePrepareA() { return 0; }
+int APS5_VABI sceNpInGameMessageSendData() { return 0; }
+int APS5_VABI sceNpInGameMessageSendDataA() { return 0; }
+int APS5_VABI sceNpInGameMessageTerminate() { return 0; }
+}
+
+
+// EULA dialog compatibility exports; online console dialogs are offline.
+extern "C" {
+int APS5_VABI sceNpEulaDialogCheckVersion() { return 0; }
+int APS5_VABI sceNpEulaDialogCheckVersionAbort() { return 0; }
+int APS5_VABI sceNpEulaDialogClose() { return 0; }
+int APS5_VABI sceNpEulaDialogGetResult() { return 0; }
+int APS5_VABI sceNpEulaDialogGetStatus() { return 0; }
+int APS5_VABI sceNpEulaDialogInitialize() { return 0; }
+int APS5_VABI sceNpEulaDialogOpen() { return 0; }
+int APS5_VABI sceNpEulaDialogTerminate() { return 0; }
+int APS5_VABI sceNpEulaDialogUpdateStatus() { return 0; }
+}
+

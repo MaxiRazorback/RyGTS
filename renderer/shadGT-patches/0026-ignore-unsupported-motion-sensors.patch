@@ -1,0 +1,42 @@
+From 0000000000000000000000000000000000000026 Mon Sep 17 00:00:00 2001
+From: Tanos <68923270+tanosshi@users.noreply.github.com>
+Date: Mon, 19 Oct 2026 17:15:00 +0200
+Subject: [PATCH] Ignore unsupported controller motion sensors
+
+Only attempt motion-control setup for sensors the gamepad exposes.
+
+---
+
+diff --git a/src/input/controller.cpp b/src/input/controller.cpp
+index a2c09d5..751b5cc 100644
+--- a/src/input/controller.cpp
++++ b/src/input/controller.cpp
+@@ -402,19 +402,24 @@ void GameControllers::TryOpenSDLControllers() {
+                 UserManagement.LoginUser(u, i + 1);
+                 c->ConnectController(pad);
+                 if (EmulatorSettings.IsMotionControlsEnabled()) {
+-                    if (SDL_SetGamepadSensorEnabled(c->m_sdl_gamepad, SDL_SENSOR_GYRO, true)) {
++                    // Motion sensors are optional; only report failures for sensors the pad has.
++                    const bool has_gyro = SDL_GamepadHasSensor(c->m_sdl_gamepad, SDL_SENSOR_GYRO);
++                    if (has_gyro &&
++                        SDL_SetGamepadSensorEnabled(c->m_sdl_gamepad, SDL_SENSOR_GYRO, true)) {
+                         const float poll_rate =
+                             SDL_GetGamepadSensorDataRate(c->m_sdl_gamepad, SDL_SENSOR_GYRO);
+                         LOG_INFO(Input, "Gyro initialized, poll rate: {}", poll_rate);
+-                    } else {
++                    } else if (has_gyro) {
+                         LOG_ERROR(Input, "Failed to initialize gyro controls for gamepad {}",
+                                   c->user_id);
+                     }
+-                    if (SDL_SetGamepadSensorEnabled(c->m_sdl_gamepad, SDL_SENSOR_ACCEL, true)) {
++                    const bool has_accel = SDL_GamepadHasSensor(c->m_sdl_gamepad, SDL_SENSOR_ACCEL);
++                    if (has_accel &&
++                        SDL_SetGamepadSensorEnabled(c->m_sdl_gamepad, SDL_SENSOR_ACCEL, true)) {
+                         const float poll_rate =
+                             SDL_GetGamepadSensorDataRate(c->m_sdl_gamepad, SDL_SENSOR_ACCEL);
+                         LOG_INFO(Input, "Accel initialized, poll rate: {}", poll_rate);
+-                    } else {
++                    } else if (has_accel) {
+                         LOG_ERROR(Input, "Failed to initialize accel controls for gamepad {}",
+                                   c->user_id);
+                     }

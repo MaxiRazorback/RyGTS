@@ -611,6 +611,34 @@ int APS5_VABI sceNetGetsockname(int s, void* addr, uint32_t* addrlen) {
     return native_to_guest_address(native, addr, addrlen) ? 0 : fail(NET_EAFNOSUPPORT);
 }
 
+int APS5_VABI sceNetGetpeername(int s, void* addr, uint32_t* addrlen) {
+    Sock socket;
+    {
+        std::lock_guard<std::mutex> lk(g_mutex);
+        auto it = g_socks.find(s);
+        if (it == g_socks.end()) return fail(NET_EBADF);
+        socket = it->second;
+    }
+    if (!addr || !addrlen) return fail(NET_EINVAL);
+    sockaddr_storage native{};
+    NativeLength native_length = sizeof(native);
+    if (::getpeername(socket.native->value, reinterpret_cast<sockaddr*>(&native), &native_length) != 0)
+        return fail(native_error());
+    return native_to_guest_address(native, addr, addrlen) ? 0 : fail(NET_EAFNOSUPPORT);
+}
+
+int APS5_VABI sceNetSendmsg() {
+    return fail(NET_EOPNOTSUPP);
+}
+
+int APS5_VABI sceNetRecvmsg() {
+    return fail(NET_EOPNOTSUPP);
+}
+
+int APS5_VABI sceNetShowIfconfig() {
+    return 0;
+}
+
 int APS5_VABI sceNetGetSockInfo(int s, void* info, int n, int flags) {
     (void)info;
     (void)n;

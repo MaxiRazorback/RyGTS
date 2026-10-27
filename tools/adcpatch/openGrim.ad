@@ -1,0 +1,86 @@
+// ryGT: ProgressRoot (projects/gt7sp/ui_kit/ProgressRoot.ad, v1.69) with an offline path for the
+// Livery Editor's upload. GT Sport's servers are gone; the editor already writes the livery set
+// files (in callback_prepare, inside this progress dialog), and after the "upload" the caller copies
+// them into the livery cache under the returned id, which the garage loads from. Offline, the upload
+// request is skipped and the id is a local one: the clock in seconds (not the time since the game
+// started, which repeats and would overwrite an earlier livery in the cache).
+#undef DIALOG_ERROR
+
+module ProgressRoot
+{
+    method openGrim(context, command, params, notify, message, callback_prepare, is_upload)
+    {
+        if (isOffline() && command != "Grim::requestLiveryUpload")
+        {
+            DIALOG_ERROR(context, "OnlineMessage", "OTHER_NETWORK_ERROR");
+            return [false, false];
+        }
+
+        self.is_upload = is_upload ?? true;
+        self.command = command;
+        self.params = params;
+        self.notify = notify;
+        self.message = message ?? (self.is_upload ? manager.translate("Gallery", "UPLOADING") : manager.translate("Component", "Label_Downloading"));
+        self.command_result = nil;
+        self.callback_result = nil;
+        self.callback_prepare = callback_prepare;
+
+        SequenceUtil::pushDialog(context, self);
+
+        var res = [self.command_result, self.callback_result];
+        self.command_result = nil;
+        self.callback_result = nil;
+        self.request = nil;
+        self.progress = nil;
+        return res;
+    }
+
+    method callRequest(context, args, progress)
+    {
+        if (self.callback_prepare != nil)
+        {
+            var result = self.callback_prepare(context, args, progress);
+            if (result != nil && result == false)
+                return false;
+        }
+
+        if (isOffline() && self.command == "Grim::requestLiveryUpload")
+        {
+            self.callback_result = pdiext::getBetterTime().getBySecond();
+            return true;
+        }
+
+        var request = FunctionManager::call(self.command, self.params);
+        var abort = false;
+        if (request == nil)
+            return false;
+
+        if (self.is_upload)
+            request.setUploadProgressCallback(self.onProgress);
+        else
+            request.setDownloadProgressCallback(self.onProgress);
+
+        self.request = request;
+        while (!request.isDone() && !request.isError())
+            yield;
+
+        return !abort && request.isDone();
+    }
+
+    // As v1.69's, without the debug-build asserts, so the patched script stays within the
+    // original's size.
+    method onProgress(args)
+    {
+        |var context, var request, var params| = args;
+        if (self.progress != nil && params != nil && params.isInstanceOf(Map))
+        {
+            var current = params["current"] ?? 0;
+            var total = params["total"] ?? 0;
+            if (current > 0 && total > 0)
+            {
+                var pos = current.toDouble() / total.toDouble();
+                self.progress.value = pos.toFloat();
+            }
+        }
+    }
+}

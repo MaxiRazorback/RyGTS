@@ -49,6 +49,8 @@ struct PthreadCondattrPrivate {
 struct PthreadCondPrivate {
     TimedWait::Condition _cv;
     int _clockid = 0;
+    /// RYGT_DIAG: who signalled last (KernelDiagWaker).
+    std::atomic<std::uint64_t> _last_signal{0};
 };
 
 struct PthreadSemPrivate {

@@ -1,0 +1,28 @@
+From afc9e36cdcf1601336776147893581650410569e Mon Sep 17 00:00:00 2001
+From: Tanos <68923270+tanosshi@users.noreply.github.com>
+Date: Mon, 19 Oct 2026 18:00:00 +0200
+Subject: [PATCH] Treat empty Vulkan layer list as normal
+
+Systems without optional Vulkan layers should not report a failed query.
+
+---
+diff --git a/src/video_core/renderer_vulkan/vk_platform.cpp b/src/video_core/renderer_vulkan/vk_platform.cpp
+index 7564271..890c9e9 100644
+--- a/src/video_core/renderer_vulkan/vk_platform.cpp
++++ b/src/video_core/renderer_vulkan/vk_platform.cpp
+@@ -231,11 +231,12 @@ std::vector<const char*> GetInstanceExtensions(Frontend::WindowSystemType window
+ 
+ std::vector<const char*> GetInstanceLayers(bool enable_validation, bool enable_crash_diagnostic) {
+     const auto [properties_result, properties] = vk::enumerateInstanceLayerProperties();
+-    if (properties_result != vk::Result::eSuccess || properties.empty()) {
++    if (properties_result != vk::Result::eSuccess) {
+         LOG_ERROR(Render_Vulkan, "Failed to query layer properties: {}",
+                   vk::to_string(properties_result));
+         return {};
+     }
++    if (properties.empty()) return {};
+ 
+     std::vector<const char*> layers;
+     layers.reserve(2);
+-- 
+2.45.0

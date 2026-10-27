@@ -12,10 +12,8 @@ static constexpr int SCE_SYSTEM_GESTURE_ERROR_INDEX_OUT_OF_ARRAY = static_cast<i
 extern "C" {
 
 int APS5_VABI sceSystemGestureAppendTouchRecognizer(int32_t gesture_handle, SystemGestureTouchRecognizer* recognizer) {
- (void)gesture_handle;
- (void)recognizer;
- NotImplemented_nid_no_patch(__func__);
- return 0;
+ if (gesture_handle != GESTURE_HANDLE) return SCE_SYSTEM_GESTURE_ERROR_INVALID_HANDLE;
+ return recognizer ? 0 : SCE_SYSTEM_GESTURE_ERROR_INVALID_ARGUMENT;
 }
 
 int APS5_VABI sceSystemGestureClose(int32_t gesture_handle) {

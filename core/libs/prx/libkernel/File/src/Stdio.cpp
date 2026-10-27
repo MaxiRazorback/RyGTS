@@ -2,6 +2,7 @@
 #include <cstddef>
 #include <limits>
 #include "SceTypes.hpp"
+#include "prx/libkernel/Time/include/Time.hpp"
 #include "prx/libc/include/General.hpp"
 #include "prx/libkernel/File/include/File.hpp"
 #include "prx/libkernel/File/include/FileFlags.hpp"
@@ -66,11 +67,17 @@ static std::int64_t NativePositioned(int descriptor, void* buf, std::size_t nbyt
     overlapped.Offset = static_cast<DWORD>(offset);
     overlapped.OffsetHigh = static_cast<DWORD>(static_cast<std::uint64_t>(offset) >> 32u);
     DWORD done = 0;
-    if (!write) PrepareGuestWrite(buf, nbytes);
-    const BOOL ok = write ? ::WriteFile(handle, buf, static_cast<DWORD>(nbytes), &done, &overlapped)
-                          : ::ReadFile(handle, buf, static_cast<DWORD>(nbytes), &done, &overlapped);
-    if (!ok) {
-        if (!write && ::GetLastError() == ERROR_HANDLE_EOF) return 0;
+    if (!write) {
+        return ReadIntoGuest(buf, nbytes, [&](void* target) -> std::int64_t {
+            OVERLAPPED at = overlapped;
+            DWORD got = 0;
+            if (::ReadFile(handle, target, static_cast<DWORD>(nbytes), &got, &at)) return got;
+            if (::GetLastError() == ERROR_HANDLE_EOF) return 0;
+            errno = EIO;
+            return -1;
+        });
+    }
+    if (!::WriteFile(handle, buf, static_cast<DWORD>(nbytes), &done, &overlapped)) {
         errno = EIO;
         return -1;
     }
@@ -242,6 +249,7 @@ int64_t APS5_VABI pread_nid_postfix(int d, void* buf, size_t nbytes, int64_t off
     if (offset < 0) {
         APS5_INVALID_ARG_EX;
     }
+    KernelDiagScope diag(KernelDiagZone::FileRead, __builtin_return_address(0));
     auto n = NativePread(d, buf, nbytes, offset);
     if (n < 0) {
         throw std::runtime_error(std::string(__func__) + ": pread failed, fd=" + std::to_string(d) + ", errno=" + std::to_string(errno));

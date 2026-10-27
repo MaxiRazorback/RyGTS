@@ -15,6 +15,10 @@ static std::atomic<int> g_nextRequest{1};
 
 extern "C" {
 
+int APS5_VABI sceNpIntGetNpTitleId() {
+    return 0;
+}
+
 int APS5_VABI sceNpAbortRequest(int req_id) {
     (void)req_id;
     return 0;

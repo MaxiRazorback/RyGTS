@@ -62,8 +62,9 @@ std::int64_t NativePread(std::int32_t fd, void* buf, std::size_t nbyte, std::int
         errno = error;
         return -1;
     }
-    PrepareGuestWrite(buf, nbyte);
-    const int result = ::_read(duped, buf, static_cast<unsigned int>(nbyte));
+    const int result = static_cast<int>(ReadIntoGuest(buf, nbyte, [&](void* target) -> std::int64_t {
+        return ::_read(duped, target, static_cast<unsigned int>(nbyte));
+    }));
     const int error = errno;
     ::_close(duped);
     errno = error;

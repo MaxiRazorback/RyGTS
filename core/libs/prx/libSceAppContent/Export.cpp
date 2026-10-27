@@ -43,6 +43,14 @@ int APS5_VABI sceAppContentAddcontUnmount(const AppContentMountPoint* mount_poin
  return 0;
 }
 
+int APS5_VABI sceAppContentGetAddcontDownloadProgress() {
+    return 0;
+}
+
+int APS5_VABI sceAppContentAddcontEnqueueDownload() {
+    return SCE_APP_CONTENT_ERROR_PARAMETER;
+}
+
 // No add-on content is installed, so the list is always empty.
 int APS5_VABI sceAppContentGetAddcontInfoList(uint32_t service_label, void* list, uint32_t list_num, uint32_t* hit_num) {
     (void)service_label;
@@ -125,3 +133,33 @@ int APS5_VABI sceAppContentTemporaryDataMount2(uint32_t option, AppContentMountP
 }
 
 }
+
+// Offline no-add-on-content compatibility exports.
+extern "C" {
+int APS5_VABI sceAppContentAddcontDelete() { return SCE_APP_CONTENT_ERROR_PARAMETER; }
+int APS5_VABI sceAppContentAddcontEnqueueDownloadByEntitlementId() { return SCE_APP_CONTENT_ERROR_PARAMETER; }
+int APS5_VABI sceAppContentAddcontEnqueueDownloadSp() { return SCE_APP_CONTENT_ERROR_PARAMETER; }
+int APS5_VABI sceAppContentAddcontMountByEntitlementId() { return SCE_APP_CONTENT_ERROR_PARAMETER; }
+int APS5_VABI sceAppContentAddcontShrink() { return SCE_APP_CONTENT_ERROR_PARAMETER; }
+int APS5_VABI sceAppContentAppParamGetString() { return SCE_APP_CONTENT_ERROR_PARAMETER; }
+int APS5_VABI sceAppContentDownload0Expand() { return SCE_APP_CONTENT_ERROR_PARAMETER; }
+int APS5_VABI sceAppContentDownload0Shrink() { return SCE_APP_CONTENT_ERROR_PARAMETER; }
+int APS5_VABI sceAppContentDownload1Expand() { return SCE_APP_CONTENT_ERROR_PARAMETER; }
+int APS5_VABI sceAppContentDownload1Shrink() { return SCE_APP_CONTENT_ERROR_PARAMETER; }
+int APS5_VABI sceAppContentDownloadDataFormat() { return SCE_APP_CONTENT_ERROR_PARAMETER; }
+int APS5_VABI sceAppContentGetAddcontInfo() { return SCE_APP_CONTENT_ERROR_PARAMETER; }
+int APS5_VABI sceAppContentGetAddcontInfoByEntitlementId() { return SCE_APP_CONTENT_ERROR_PARAMETER; }
+int APS5_VABI sceAppContentGetAddcontInfoListByIroTag() { return SCE_APP_CONTENT_ERROR_PARAMETER; }
+int APS5_VABI sceAppContentGetDownloadedStoreCountry() { return SCE_APP_CONTENT_ERROR_PARAMETER; }
+int APS5_VABI sceAppContentGetEntitlementKey() { return SCE_APP_CONTENT_ERROR_PARAMETER; }
+int APS5_VABI sceAppContentGetPftFlag() { return SCE_APP_CONTENT_ERROR_PARAMETER; }
+int APS5_VABI sceAppContentGetRegion() { return SCE_APP_CONTENT_ERROR_PARAMETER; }
+int APS5_VABI sceAppContentRequestPatchInstall() { return SCE_APP_CONTENT_ERROR_PARAMETER; }
+int APS5_VABI sceAppContentSmallSharedDataFormat() { return SCE_APP_CONTENT_ERROR_PARAMETER; }
+int APS5_VABI sceAppContentSmallSharedDataGetAvailableSpaceKb() { return SCE_APP_CONTENT_ERROR_PARAMETER; }
+int APS5_VABI sceAppContentSmallSharedDataMount() { return SCE_APP_CONTENT_ERROR_PARAMETER; }
+int APS5_VABI sceAppContentSmallSharedDataUnmount() { return SCE_APP_CONTENT_ERROR_PARAMETER; }
+int APS5_VABI sceAppContentTemporaryDataMount() { return SCE_APP_CONTENT_ERROR_PARAMETER; }
+int APS5_VABI sceAppContentTemporaryDataUnmount() { return SCE_APP_CONTENT_ERROR_PARAMETER; }
+}
+

@@ -1,0 +1,50 @@
+// ryGT: GrimDecal.requestDecalList (scripts/gt7sp/grim, v1.69) without GT Sport's servers. The decal
+// list ("My Decals" in the gallery) comes from SVG files instead: ryGT copies <game>\decals\*.svg to
+// /APP_CACHE/decals as "<id>_<name>.svg", and each one is copied into the decal cache under that id,
+// where the gallery thumbnails and the Livery Editor load decals from. /APP_CACHE files are
+// encrypted by the game's file layer, so the plain SVG is read through /APP_CACHE_RAW.
+
+module GrimDecal
+{
+    function requestDecalList(args0)
+    {
+        |var user_no, var on_callback| = args0;
+        var result = [];
+        var entries = pdistd::GetFileEntries("/APP_CACHE/decals");
+        if (entries != nil)
+        {
+            var re = Regexp("^([0-9]+)_(.*)[.]svg$");
+            foreach (var e in entries)
+            {
+                var name = e["name"];
+                if (e["type"] != "DIRECTORY" && re.match(name))
+                {
+                    var id = re.getMatchString(1).toULong();
+                    pdistd::CopyFile("/APP_CACHE_RAW/decals/" + name, getDecalPath(id));
+                    var decal = ["decal_id" : id, "user_no" : 0, "tags" : [], "title" : re.getMatchString(2), "decal_hidden" : 0];
+                    result.push(decal);
+                    addDecalToCache(decal);
+                }
+            }
+        }
+        GrimFunctions::notifyState(nil, "Grim::DecalList", result, on_callback);
+        return nil;
+    }
+}
+
+// GrimLivery's ban checks (livery.test) ask GT Sport's servers before the garage loads a livery
+// from the livery cache; offline the request never finishes and the garage keeps loading. No
+// livery is banned offline.
+module GrimLivery
+{
+    function liveryTest(args0)
+    {
+        |var livery_id| = args0;
+        return Promise::resolve([livery_id, true]);
+    }
+
+    function requestLiveryTest(liveries)
+    {
+        return Promise::resolve([]);
+    }
+}

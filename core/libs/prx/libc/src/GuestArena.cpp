@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <iterator>
 #include <map>
 #include <mutex>
@@ -19,14 +21,20 @@ namespace {
 constexpr std::uintptr_t PreferredBase = 0x0000000200000000ull;
 constexpr std::uintptr_t SystemReservedStart = 0x00000007FFFFC000ull;
 constexpr std::uintptr_t SystemReservedEnd = 0x0000001000000000ull;
+constexpr std::uintptr_t InteropStart = 0x000000E000000000ull;
+constexpr std::uintptr_t InteropEnd = 0x000000F000000000ull;
 constexpr std::uintptr_t MapAreaEnd = 0x000000FC00000000ull;
-// PS4 titles place fixed mappings anywhere below MapAreaEnd (GT Sport maps at 0xf3ffe00000), so try to
-// cover the whole guest map area first; the loop below falls back to smaller reservations.
-constexpr std::size_t MaximumSize = MapAreaEnd - PreferredBase;
-constexpr std::size_t MinimumSize = 0x0000001000000000ull;
+// Keep low virtual addresses available for NVIDIA interop. Leave a 64 GiB host window
+// below the high fixed guest mappings (GT Sport uses 0xf3ffe00000). Protect the rest
+// before loading drivers so unconstrained host reservations cannot steal guest pools.
 
 std::uintptr_t alignUp(std::uintptr_t value, std::size_t alignment) {
     return (value + alignment - 1) & ~(static_cast<std::uintptr_t>(alignment) - 1);
+}
+
+bool WriteWatchRequested() {
+    const char* enabled = std::getenv("APS5_WRITE_WATCH");
+    return std::getenv("APS5_NO_WRITE_WATCH") == nullptr && enabled && std::strcmp(enabled, "1") == 0;
 }
 
 class Arena {
@@ -47,24 +55,49 @@ public:
 
     void* Allocate(std::size_t bytes, std::size_t alignment) {
         if (_base == 0) throw std::runtime_error("guest address space arena is unavailable");
+        if (bytes == 0) throw std::invalid_argument("invalid guest allocation size");
         if (alignment == 0 || (alignment & (alignment - 1)) != 0) throw std::invalid_argument("invalid guest arena alignment");
         std::lock_guard lock(_lock);
         std::uintptr_t candidate = alignUp(_base, alignment);
         for (const auto& [start, end] : _used) {
-            if (candidate + bytes <= start) break;
+            if (candidate < start && bytes <= start - candidate) {
+#ifdef _WIN32
+                if (void* reserved = WindowsMappings::Get().FindAndReserve(candidate, start, bytes, alignment)) {
+                    const auto address = reinterpret_cast<std::uintptr_t>(reserved);
+                    _used.emplace(address, address + bytes);
+                    return reserved;
+                }
+#endif
+            }
             candidate = std::max(candidate, alignUp(end, alignment));
         }
-        if (bytes > _end - candidate) throw std::runtime_error("guest address space arena exhausted");
-        _used.emplace(candidate, candidate + bytes);
-        return reinterpret_cast<void*>(candidate);
+#ifdef _WIN32
+        if (candidate < _end) {
+            if (void* reserved = WindowsMappings::Get().FindAndReserve(candidate, _end, bytes, alignment)) {
+                const auto address = reinterpret_cast<std::uintptr_t>(reserved);
+                _used.emplace(address, address + bytes);
+                return reserved;
+            }
+        }
+#endif
+        throw std::runtime_error("guest address space arena exhausted");
     }
 
     void MarkUsed(const void* pointer, std::size_t bytes) {
         std::lock_guard lock(_lock);
         const auto start = reinterpret_cast<std::uintptr_t>(pointer);
+        if (!Contains(pointer, bytes) || bytes == 0) throw std::invalid_argument("fixed guest mapping is outside the arena");
         const auto next = _used.lower_bound(start);
         if ((next != _used.end() && next->first < start + bytes) || (next != _used.begin() && std::prev(next)->second > start))
             throw std::runtime_error("fixed guest mapping overlaps a guest arena range");
+#ifdef _WIN32
+        if (!WindowsMappings::Get().Reserve(const_cast<void*>(pointer), bytes)) {
+            char message[160];
+            std::snprintf(message, sizeof(message), "fixed guest mapping overlaps host address space: 0x%llx+0x%llx (Windows error %lu)",
+                static_cast<unsigned long long>(start), static_cast<unsigned long long>(bytes), GetLastError());
+            throw std::runtime_error(message);
+        }
+#endif
         _used.emplace(start, start + bytes);
     }
 
@@ -90,20 +123,15 @@ public:
 private:
     Arena() {
 #ifdef _WIN32
-        // Windows places other reservations randomly, so take the lowest base and largest size that fit.
-        for (std::uintptr_t base = PreferredBase; base + MinimumSize <= MapAreaEnd; base += MinimumSize) {
-            for (std::size_t size = MaximumSize; size >= MinimumSize; size /= 2) {
-                if (base + size > MapAreaEnd) continue;
-                _writeWatched = std::getenv("APS5_NO_WRITE_WATCH") == nullptr;
-                void* reserved = WindowsMappings::Get().Reserve(reinterpret_cast<void*>(base), size);
-                if (!reserved) continue;
-                _base = reinterpret_cast<std::uintptr_t>(reserved);
-                _end = _base + size;
-                if (_base < SystemReservedEnd && SystemReservedStart < _end) _used.emplace(std::max(_base, SystemReservedStart), std::min(_end, SystemReservedEnd));
-                return;
-            }
-        }
-        std::fprintf(stderr, "[memory] guest arena unavailable below 0x%llx\n", static_cast<unsigned long long>(MapAreaEnd));
+        _base = PreferredBase;
+        _end = MapAreaEnd;
+        _writeWatched = WriteWatchRequested();
+        _used.emplace(SystemReservedStart, SystemReservedEnd);
+        _used.emplace(InteropStart, InteropEnd);
+        auto& mappings = WindowsMappings::Get();
+        if (!mappings.ReserveAvailable(PreferredBase, InteropStart) ||
+            !mappings.ReserveAvailable(InteropEnd, MapAreaEnd))
+            throw std::runtime_error("cannot reserve guest mapping windows around host interop space");
 #endif
     }
 
@@ -155,6 +183,10 @@ void GuestArenaSetProtection_nid_postfix(std::uintptr_t address, std::size_t byt
 
 bool GuestArenaHandleWrite_nid_postfix(std::uintptr_t address) {
     return WindowsMappings::Get().HandleWrite(address);
+}
+
+bool GuestArenaAwaitRemap_nid_postfix(std::uintptr_t address, bool write) {
+    return WindowsMappings::Get().AwaitRemap(address, write);
 }
 
 bool GuestArenaProtection_nid_postfix(std::uintptr_t address, std::uint32_t* protection) {

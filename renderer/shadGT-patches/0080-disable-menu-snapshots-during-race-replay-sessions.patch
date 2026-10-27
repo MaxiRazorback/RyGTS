@@ -1,0 +1,98 @@
+diff --git a/ryty_gpu/ryty_game_patch.cpp b/ryty_gpu/ryty_game_patch.cpp
+--- a/ryty_gpu/ryty_game_patch.cpp
++++ b/ryty_gpu/ryty_game_patch.cpp
+@@ -34,3 +34,4 @@
+ #include "core/memory.h"
+ #include "ryty_gpu/native/entry_hook.h"
++#include "ryty_gpu/native/menu_snapshot_session.h"
+ #include "input/trigger_feedback.h"
+@@ -1273,2 +1275,28 @@
++// Menu CPU snapshots are unsafe during every native race session, including
++// attract replays which can reuse scripts without updating the project hint.
++using SnapshotSessionFn = void(PS4_SYSV_ABI*)(u64, u64, s32, u64);
++Native::MenuSnapshotSession g_snapshot_session;
++SnapshotSessionFn g_snapshot_start{}, g_snapshot_end{};
++bool g_snapshot_session_ready = false; // Installed before game threads start.
++void PS4_SYSV_ABI SnapshotStart(u64 result, u64 self, s32 argc, u64 argv) {
++    g_snapshot_session.Begin();
++    g_snapshot_start(result, self, argc, argv);
++}
++void PS4_SYSV_ABI SnapshotEnd(u64 result, u64 self, s32 argc, u64 argv) {
++    const auto token = g_snapshot_session.Ending();
++    g_snapshot_end(result, self, argc, argv);
++    g_snapshot_session.End(token);
++}
++void InstallMenuSnapshotSessionGuard(u8* base) {
++    Native::NearCode code{base};
++    constexpr u8 prologue[] = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57};
++    g_snapshot_start = reinterpret_cast<SnapshotSessionFn>(Native::HookEntry(
++        code, base, 0x3e1900, prologue, reinterpret_cast<void*>(&SnapshotStart), "menu snapshot session start"));
++    g_snapshot_end = reinterpret_cast<SnapshotSessionFn>(Native::HookEntry(
++        code, base, 0x3e1b00, prologue, reinterpret_cast<void*>(&SnapshotEnd), "menu snapshot session end"));
++    g_snapshot_session_ready = g_snapshot_start && g_snapshot_end;
++}
++
+ void RytyApplyGamePatches() {
++    InstallMenuSnapshotSessionGuard(reinterpret_cast<u8*>(GetModuleHandleA(nullptr)));
+     InstallIdleKeyboardClose(reinterpret_cast<u8*>(GetModuleHandleA(nullptr)));
+@@ -1316,4 +1344,7 @@
+ bool RytyGtsInRace() {
+     return g_in_race.load(std::memory_order_relaxed);
+ }
++bool RytyGtsMenuSnapshotsAllowed() {
++    return g_snapshot_session_ready && g_snapshot_session.Idle() && !RytyGtsInRace();
++}
+ } // namespace Vulkan
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer_native.cpp b/src/video_core/renderer_vulkan/vk_rasterizer_native.cpp
+--- a/src/video_core/renderer_vulkan/vk_rasterizer_native.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer_native.cpp
+@@ -60,6 +60,7 @@
+ 
+ namespace Vulkan {
+ bool RytyGtsInRace();
++bool RytyGtsMenuSnapshotsAllowed();
+ namespace {
+ 
+ /// Logs the first few times and then every 1000th.
+@@ -1551,8 +1552,9 @@
+         const char* env = std::getenv("RYGT_NATIVE_SNAPSHOT_BELOW");
+         return env && *env ? std::strtoull(env, nullptr, 0) : u64{1_MB};
+     }();
+-    // Race buffers can depend on GPU writes not yet visible to a CPU snapshot.
+-    return RytyGtsInRace() ? 0 : below;
++    // Race/replay buffers can depend on GPU writes not visible to a CPU snapshot.
++    // The native session guard also covers attract replays using cached menu scripts.
++    return RytyGtsMenuSnapshotsAllowed() ? below : 0;
+ }
+ 
+ std::optional<std::pair<vk::Buffer, u64>> NativeRenderer::GuestBuffer(VAddr address, u64 size,
+diff --git a/ryty_gpu/native/menu_snapshot_session.h b/ryty_gpu/native/menu_snapshot_session.h
+new file mode 100644
+--- /dev/null
++++ b/ryty_gpu/native/menu_snapshot_session.h
+@@ -0,0 +1,25 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++#pragma once
++#include <atomic>
++#include <cstdint>
++
++namespace Native {
++// Session starts do not depend on scripts being reloaded. A retiring session
++// must not re-enable CPU snapshots over a newer session's GPU-owned buffers.
++class MenuSnapshotSession {
++public:
++    void Begin() {
++        auto token = state.load(std::memory_order_relaxed);
++        while (!state.compare_exchange_weak(token, (token + 2) | 1,
++                                            std::memory_order_acq_rel)) {}
++    }
++    std::uint64_t Ending() const { return state.load(std::memory_order_acquire); }
++    void End(std::uint64_t token) {
++        const auto idle = token & ~std::uint64_t{1};
++        state.compare_exchange_strong(token, idle, std::memory_order_acq_rel);
++    }
++    bool Idle() const { return (state.load(std::memory_order_acquire) & 1) == 0; }
++private:
++    std::atomic<std::uint64_t> state{0};
++};
++}

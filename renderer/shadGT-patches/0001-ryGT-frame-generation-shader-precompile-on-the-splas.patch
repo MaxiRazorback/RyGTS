@@ -1,0 +1,2533 @@
+From 65c334c84ee739a1cdccc4b9e948cbe8f9b0d28b Mon Sep 17 00:00:00 2001
+From: mlgprorektm8 <67933lance@gmail.com>
+Date: Tue, 13 Oct 2026 19:31:48 -0500
+Subject: [PATCH] ryGT: frame generation, shader precompile on the splash
+ screen, compile freeze
+
+- Frame generation: AMD FSR 3.1.4 frame generation (amd_fidelityfx_vk.dll, GPU.framegen_enabled).
+  FidelityFX makes the swapchain (three extra graphics-family queues), the presenter records its
+  per-frame preparation; zero motion vectors and flat depth, as the game gives none. Paced with
+  hybrid spin and fence waits. The FPS counter shows game and shown frames.
+- PERF-097: shader translation and pipeline build workers run on the efficiency cores.
+- PERF-098: GPU.precompile_shaders: every stored pipeline is built while the splash screen shows
+  (idle command thread installs them, all workers build them), with a progress bar.
+- PERF-100: GPU.compile_freeze: the game pauses (guest clocks held) while a new pipeline
+  compiles; the last frame is shown again with a "Compiling new shaders..." notice (bottom left).
+  The re-shown frame is taken out of the free queue meanwhile (a crash in the driver otherwise).
+- PERF-101: GPU.compile_batch_ms: a compile pause also finishes the read-ahead builds, up to that
+  long.
+- PERF-102: the game waits on the splash screen until the precompile is done; meanwhile builds
+  use every core.
+- PERF-095 (opt-in, SHADGT_LAZY_ASC_EPOCH=1): compute-queue upload epochs only when a queue reads
+  memory.
+- DIAG-097 (opt-in): GT Sport view-distance settings hooks (RYGT_ENV_*); read/write hardware
+  watches (DIAG-067 "rw").
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ GT_SPORT_OPTIMIZATION_LOG.md                  |  74 +++
+ ryty_gpu/RytyGpu.cmake                        |   2 +
+ ryty_gpu/ffx_api/ffx_framegeneration.h        | 190 +++++++
+ ryty_gpu/ryty_entry.cpp                       | 126 ++++-
+ ryty_gpu/ryty_framegen.cpp                    | 470 ++++++++++++++++++
+ ryty_gpu/ryty_framegen.h                      |  80 +++
+ ryty_gpu/ryty_fsr3.cpp                        |   4 +
+ ryty_gpu/ryty_fsr3.h                          |   4 +
+ ryty_gpu/ryty_game_patch.cpp                  | 311 ++++++++++++
+ ryty_gpu/ryty_stubs.cpp                       |   7 +-
+ ryty_gpu/ryty_write_watch.cpp                 |  26 +-
+ src/common/guest_clock.cpp                    |  12 +
+ src/common/guest_clock.h                      |   5 +
+ src/common/thread.cpp                         |  24 +
+ src/common/thread.h                           |   8 +
+ src/core/emulator_settings.h                  |  24 +-
+ src/core/libraries/videoout/driver.cpp        |  11 +-
+ src/video_core/amdgpu/liverpool.cpp           |  57 ++-
+ src/video_core/renderer_vulkan/build_queue.h  |  43 +-
+ .../renderer_vulkan/vk_instance.cpp           |  15 +-
+ src/video_core/renderer_vulkan/vk_instance.h  |   7 +
+ .../renderer_vulkan/vk_pipeline_cache.cpp     | 132 ++++-
+ .../renderer_vulkan/vk_pipeline_cache.h       |  17 +-
+ .../renderer_vulkan/vk_presenter.cpp          |  28 ++
+ src/video_core/renderer_vulkan/vk_presenter.h |   3 +
+ .../renderer_vulkan/vk_swapchain.cpp          |  52 +-
+ src/video_core/renderer_vulkan/vk_swapchain.h |  13 +
+ 27 files changed, 1703 insertions(+), 42 deletions(-)
+ create mode 100644 ryty_gpu/ffx_api/ffx_framegeneration.h
+ create mode 100644 ryty_gpu/ryty_framegen.cpp
+ create mode 100644 ryty_gpu/ryty_framegen.h
+
+diff --git a/GT_SPORT_OPTIMIZATION_LOG.md b/GT_SPORT_OPTIMIZATION_LOG.md
+index 70fcf541..1b7e64ad 100644
+--- a/GT_SPORT_OPTIMIZATION_LOG.md
++++ b/GT_SPORT_OPTIMIZATION_LOG.md
+@@ -1556,3 +1556,77 @@ Lance's profile against these changes:
+ - **Recorder work.** It falls from about 31 ms to about 16-17 ms per race frame: fault waits about -6 ms, hashing about -2.5 ms, heap about -1.5 ms, image scans about -1.8 ms, others about -2 ms.
+ - **Recorder-bound rate.** If the fault chain no longer leaves the recorder idle, that is about 55-60 FPS.
+ - **GPU bound.** The GPU's busy figure at 25 FPS (31-47%) puts its own limit somewhere between 52 and 80 FPS.
++
++## PS4 Pro ground truth and follow-ups (October 13, branch `ryty-gpu`)
++
++A live PS4 Pro running GT Sport 1.69 was captured through ps4debug (tools and findings in
++`D:\Downloads\PS4 debug\gtprobe`, FINDINGS.md). Measured on hardware:
++
++- Race: 60 fps, 1,601 draws/frame, GPU busy ~13.9 of 16.6 ms.
++- Kyoto menu: 30 fps with 2,300-4,600 draws/frame. The GPU is busy ~16 ms per frame, and the
++  game does not cap the rate (flip rate 60, VSYNC flips, one frame in flight). The console's CPU
++  is the limit.
++- Async compute: 9 DingDongs per frame in a race (5 in Kyoto) on 4-5 queues. 3 of the race's 9
++  (and 3 of Kyoto's 5) contain no dispatch and no DMA, only fences, cache flushes or an empty
++  chain of IB links.
++- GT Sport's eboot has 13 AMD-only SSE4a sites (`insertq`/`extrq`). On Intel, Ryty traps and
++  emulates each execution.
++
++### DIAG-098: SSE4a emulation rate in a race (no code change)
++
++Ryty's libc counter `g_sse4aEmulated` (libc.prx RVA 0x7f590) is read from the running game with
++`tools\peek.exe` during `perf-test.ps1` (autotest). If the rate is negligible, the 13 sites
++are left to Ryty's handler.
++
++- **Result (two autotest runs, 15:30-15:50):** `g_sse4aEmulated` stayed at **0** through boot,
++  every arcade menu and ~90 s of the race. The address was checked by reading the neighbouring
++  `g_sse4aEmulation` (1) and `g_sse4aTrace` (1).
++- **Conclusion:** the SSE4a sites do not run in these scenes, so there is nothing to patch.
++- **Baseline race, old build:** 42.1 fps, recorder 93% busy, 11.06 µs per draw or dispatch.
++- **Test script:** `perf-test.ps1`'s presses ended before the race on the first try (slow car
++  list). `gtprobe\rygt-race-test.ps1` adds presses at 122 s and 130 s and throttle at 136 s.
++
++### PERF-095 (opt-in `SHADGT_LAZY_ASC_EPOCH=1`; first built as perf id 112): compute-queue upload epochs only when a queue reads memory
++
++- **What:** `SubmitAsc` and the compute-queue frontend waits (WAIT_REG_MEM, MEM_SEMAPHORE,
++  REWIND) mark an upload epoch as pending instead of bumping it. A compute queue bumps the
++  pending epoch when it next records a dispatch (direct or indirect) or a DMA. An ASC submission
++  that only fences, flushes caches or chains IBs therefore costs no epoch.
++- **Why:** each epoch makes the recorder re-check dirty and hot pages for every range it binds
++  afterwards. On hardware, 3 of the 9 per-frame race submissions read no memory.
++- **Files:** `src/video_core/amdgpu/liverpool.cpp`.
++- **Risk:**
++  - Graphics draws decoded after a no-op compute submission no longer get the extra epoch it
++    caused.
++  - Graphics submits, graphics waits and write faults still bump, and protected pages still
++    fault. What could be missed is a hot (unprotected) page that the CPU rewrote after the last
++    graphics epoch without any gate in between. Such a page is a race on hardware too.
++  - The reverted PERF-090 graphics-only epoch memo measured only 5-10% cheaper read obtains.
++    Expect a small gain.
++  - `SHADGT_DISABLE_PERF=112` restores the old behavior.
++- **Test:** race `perf-test.ps1` in autotest, with and without id 112, compared on fps,
++  recorder µs/draw and upload epochs, plus screenshots of the cockpit and track.
++- **Status:** implemented and built (15:44), then A/B tested in the autotest race (on, off, on,
++  off with the same binary; `gtprobe\ab-perf095.ps1`):
++
++  | Run | Upload epochs/frame | fps | µs per draw | Protection calls / 2 s |
++  |---|---|---|---|---|
++  | on-1 | 4.1 | 38.2 | 12.03 | 53k |
++  | off-1 | 8.0 | 42.0 | 10.32 | 38k |
++  | on-2 | 4.0 | 37.4 | 11.50 | 43k |
++  | off-2 | 7.8 | 38.5 | 12.38 | 54k |
++
++  - Epochs halve as designed.
++  - The same setting varies ~10% between runs (off-1 vs off-2). The on/off averages (37.8 vs
++    40.3 fps, 11.8 vs 11.4 µs) are inside that noise.
++  - Race screenshots render correctly.
++  - **No measurable gain, so it is now opt-in (default off, behavior unchanged).** This agrees
++    with PERF-090.
++  - **Opt-in build (16:04), verified in two more races:**
++    - Default: 8.0 epochs/frame, as before.
++    - `SHADGT_LAZY_ASC_EPOCH=1`: 3.7 epochs/frame. 41.8 vs 29.8 fps, but the default run's
++      race started late (the 165 s screenshot is still the starting grid), so that pair is
++      not comparable.
++    - No crashes. Installed only in `E:\Development\RyGT\autotest` (backup
++      `libSceVideoOut.prx.bak-pre-perf095`).
++    - Worth one try where the recorder is the limit (Kyoto menu, recorder 98-99% busy).
+diff --git a/ryty_gpu/RytyGpu.cmake b/ryty_gpu/RytyGpu.cmake
+index 845546f4..c51687aa 100644
+--- a/ryty_gpu/RytyGpu.cmake
++++ b/ryty_gpu/RytyGpu.cmake
+@@ -98,6 +98,8 @@ ryty_add_library(ryty_gpu libSceVideoOut
+         ryty_gpu/ryty_dlss.cpp
+         # AMD FSR 3.1 through amd_fidelityfx_vk.dll (ryty_fsr3.h).
+         ryty_gpu/ryty_fsr3.cpp
++        # AMD FSR 3.1 frame generation (ryty_framegen.h).
++        ryty_gpu/ryty_framegen.cpp
+         # FIX-074: shadGT's static red-zone patching, applied to the converted game code.
+         ryty_gpu/ryty_red_zone.cpp
+         ryty_gpu/ryty_game_patch.cpp
+diff --git a/ryty_gpu/ffx_api/ffx_framegeneration.h b/ryty_gpu/ffx_api/ffx_framegeneration.h
+new file mode 100644
+index 00000000..12f996d5
+--- /dev/null
++++ b/ryty_gpu/ffx_api/ffx_framegeneration.h
+@@ -0,0 +1,190 @@
++// This file is part of the FidelityFX SDK.
++//
++// Copyright (C) 2024 Advanced Micro Devices, Inc.
++// 
++// Permission is hereby granted, free of charge, to any person obtaining a copy
++// of this software and associated documentation files(the "Software"), to deal
++// in the Software without restriction, including without limitation the rights
++// to use, copy, modify, merge, publish, distribute, sublicense, and /or sell
++// copies of the Software, and to permit persons to whom the Software is
++// furnished to do so, subject to the following conditions :
++//
++// The above copyright notice and this permission notice shall be included in
++// all copies or substantial portions of the Software.
++//
++// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
++// THE SOFTWARE.
++
++#pragma once
++
++#include "ffx_api.h"
++#include "ffx_api_types.h"
++
++#define FFX_API_EFFECT_ID_FRAMEGENERATION 0x00020000u
++
++#if defined(__cplusplus)
++extern "C" {
++#endif
++enum FfxApiCreateContextFramegenerationFlags
++{
++    FFX_FRAMEGENERATION_ENABLE_ASYNC_WORKLOAD_SUPPORT              = (1<<0),
++    FFX_FRAMEGENERATION_ENABLE_DISPLAY_RESOLUTION_MOTION_VECTORS   = (1<<1), ///< A bit indicating if the motion vectors are rendered at display resolution.
++    FFX_FRAMEGENERATION_ENABLE_MOTION_VECTORS_JITTER_CANCELLATION  = (1<<2), ///< A bit indicating that the motion vectors have the jittering pattern applied to them.
++    FFX_FRAMEGENERATION_ENABLE_DEPTH_INVERTED                      = (1<<3), ///< A bit indicating that the input depth buffer data provided is inverted [1..0].
++    FFX_FRAMEGENERATION_ENABLE_DEPTH_INFINITE                      = (1<<4), ///< A bit indicating that the input depth buffer data provided is using an infinite far plane.
++    FFX_FRAMEGENERATION_ENABLE_HIGH_DYNAMIC_RANGE                  = (1<<5), ///< A bit indicating if the input color data provided to all inputs is using a high-dynamic range.
++    FFX_FRAMEGENERATION_ENABLE_DEBUG_CHECKING                      = (1<<6), ///< A bit indicating that the runtime should check some API values and report issues.
++};
++
++enum FfxApiDispatchFramegenerationFlags
++{
++    FFX_FRAMEGENERATION_FLAG_DRAW_DEBUG_TEAR_LINES       = (1 << 0),  ///< A bit indicating that the debug tear lines will be drawn to the generated output.
++    FFX_FRAMEGENERATION_FLAG_DRAW_DEBUG_RESET_INDICATORS = (1 << 1),  ///< A bit indicating that the debug reset indicators will be drawn to the generated output.
++    FFX_FRAMEGENERATION_FLAG_DRAW_DEBUG_VIEW = (1 << 2),              ///< A bit indicating that the generated output resource will contain debug views with relevant information.
++    FFX_FRAMEGENERATION_FLAG_NO_SWAPCHAIN_CONTEXT_NOTIFY = (1 << 3),  ///< A bit indicating that the context should only run frame interpolation and not modify the swapchain.
++    FFX_FRAMEGENERATION_FLAG_DRAW_DEBUG_PACING_LINES = (1 << 4),      ///< A bit indicating that the debug pacing lines will be drawn to the generated output.
++    FFX_FRAMEGENERATION_FLAG_RESERVED_1 = (1 << 5),
++    FFX_FRAMEGENERATION_FLAG_RESERVED_2 = (1 << 6), 
++};
++
++enum FfxApiUiCompositionFlags
++{
++    FFX_FRAMEGENERATION_UI_COMPOSITION_FLAG_USE_PREMUL_ALPHA                    = (1 << 0),  ///< A bit indicating that we use premultiplied alpha for UI composition.
++    FFX_FRAMEGENERATION_UI_COMPOSITION_FLAG_ENABLE_INTERNAL_UI_DOUBLE_BUFFERING = (1 << 1),  ///< A bit indicating that the swapchain should doublebuffer the UI resource.
++};
++
++#define FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATION 0x00020001u
++struct ffxCreateContextDescFrameGeneration
++{
++    ffxCreateContextDescHeader header;
++    uint32_t flags;                             ///< A combination of zero or more values from FfxApiCreateContextFramegenerationFlags.
++    struct FfxApiDimensions2D displaySize;      ///< The resolution at which both rendered and generated frames will be displayed.
++    struct FfxApiDimensions2D maxRenderSize;    ///< The maximum rendering resolution.
++    uint32_t backBufferFormat;                  ///< The surface format for the backbuffer. One of the values from FfxApiSurfaceFormat.
++};
++
++#define FFX_API_CALLBACK_DESC_TYPE_FRAMEGENERATION_PRESENT 0x00020005u
++typedef struct ffxCallbackDescFrameGenerationPresent
++{
++    ffxDispatchDescHeader header;
++    void* device;                                   ///< The device passed in (from a backend description) during context creation.
++    void* commandList;                              ///< A command list that will be executed before presentation.
++    struct FfxApiResource currentBackBuffer;        ///< Backbuffer image either rendered or generated.
++    struct FfxApiResource currentUI;                ///< UI image for composition if passed. Otherwise empty.
++    struct FfxApiResource outputSwapChainBuffer;    ///< Output image that will be presented.
++    bool isGeneratedFrame;                          ///< true if this frame is generated, false if rendered.
++    uint64_t              frameID;                  ///< Identifier used to select internal resources when async support is enabled. Must increment by exactly one (1) for each frame. Any non-exactly-one difference will reset the frame generation logic.
++} ffxCallbackDescFrameGenerationPresent;
++
++#define FFX_API_DISPATCH_DESC_TYPE_FRAMEGENERATION 0x00020003u
++typedef struct ffxDispatchDescFrameGeneration
++{
++    ffxDispatchDescHeader header;
++    void*                 commandList;                ///< The command list on which to register render commands.
++    struct FfxApiResource presentColor;               ///< The current presentation color, this will be used as source data.
++    struct FfxApiResource outputs[4];                 ///< Destination targets (1 for each frame in numGeneratedFrames).
++    uint32_t              numGeneratedFrames;         ///< The number of frames to generate from the passed in color target.
++    bool                  reset;                      ///< A boolean value which when set to true, indicates the camera has moved discontinuously.
++    uint32_t              backbufferTransferFunction; ///< The transfer function use to convert frame generation source color data to linear RGB. One of the values from FfxApiBackbufferTransferFunction.
++    float                 minMaxLuminance[2];         ///< Min and max luminance values, used when converting HDR colors to linear RGB.
++    struct FfxApiRect2D   generationRect;             ///< The area of the backbuffer that should be used for generation in case only a part of the screen is used e.g. due to movie bars.
++    uint64_t              frameID;                    ///< Identifier used to select internal resources when async support is enabled. Must increment by exactly one (1) for each frame. Any non-exactly-one difference will reset the frame generation logic.
++} ffxDispatchDescFrameGeneration;
++
++typedef ffxReturnCode_t(*FfxApiPresentCallbackFunc)(ffxCallbackDescFrameGenerationPresent* params, void* pUserCtx);
++typedef ffxReturnCode_t(*FfxApiFrameGenerationDispatchFunc)(ffxDispatchDescFrameGeneration* params, void* pUserCtx);
++
++#define FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATION 0x00020002u
++struct ffxConfigureDescFrameGeneration
++{
++    ffxConfigureDescHeader header;
++    void* swapChain;                                            ///< The swapchain to use with frame generation.
++    FfxApiPresentCallbackFunc presentCallback;                  ///< A UI composition callback to call when finalizing the frame image.
++    void* presentCallbackUserContext;                           ///< A pointer to be passed to the UI composition callback.
++    FfxApiFrameGenerationDispatchFunc frameGenerationCallback;  ///< The frame generation callback to use to generate a frame.
++    void* frameGenerationCallbackUserContext;                   ///< A pointer to be passed to the frame generation callback.
++    bool frameGenerationEnabled;                                ///< Sets the state of frame generation. Set to false to disable frame generation.
++    bool allowAsyncWorkloads;                                   ///< Sets the state of async workloads. Set to true to enable generation work on async compute.
++    struct FfxApiResource HUDLessColor;                         ///< The hudless back buffer image to use for UI extraction from backbuffer resource. May be empty.
++    uint32_t flags;                                             ///< Zero or combination of flags from FfxApiDispatchFrameGenerationFlags.
++    bool onlyPresentGenerated;                                  ///< Set to true to only present generated frames.
++    struct FfxApiRect2D generationRect;                         ///< The area of the backbuffer that should be used for generation in case only a part of the screen is used e.g. due to movie bars
++    uint64_t frameID;                                           ///< Identifier used to select internal resources when async support is enabled. Must increment by exactly one (1) for each frame. Any non-exactly-one difference will reset the frame generation logic.
++};
++
++#define FFX_API_DISPATCH_DESC_TYPE_FRAMEGENERATION_PREPARE 0x00020004u
++struct ffxDispatchDescFrameGenerationPrepare
++{
++    ffxDispatchDescHeader      header;
++    uint64_t                   frameID;            ///< Identifier used to select internal resources when async support is enabled. Must increment by exactly one (1) for each frame. Any non-exactly-one difference will reset the frame generation logic.
++    uint32_t                   flags;              ///< Zero or combination of values from FfxApiDispatchFrameGenerationFlags.
++    void*                      commandList;        ///< A command list to record frame generation commands into.
++    struct FfxApiDimensions2D  renderSize;         ///< The dimensions used to render game content, dilatedDepth, dilatedMotionVectors are expected to be of ths size.
++    struct FfxApiFloatCoords2D jitterOffset;       ///< The subpixel jitter offset applied to the camera.
++    struct FfxApiFloatCoords2D motionVectorScale;  ///< The scale factor to apply to motion vectors.
++
++    float                 frameTimeDelta;          ///< Time elapsed in milliseconds since the last frame.
++    bool                  unused_reset;            ///< A (currently unused) boolean value which when set to true, indicates FrameGeneration will be called in reset mode
++    float                 cameraNear;              ///< The distance to the near plane of the camera.
++    float                 cameraFar;               ///< The distance to the far plane of the camera. This is used only used in case of non infinite depth.
++    float                 cameraFovAngleVertical;  ///< The camera angle field of view in the vertical direction (expressed in radians).
++    float                 viewSpaceToMetersFactor; ///< The scale factor to convert view space units to meters
++    struct FfxApiResource depth;                   ///< The depth buffer data
++    struct FfxApiResource motionVectors;           ///< The motion vector data    
++};
++
++#define FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATION_KEYVALUE 0x00020006u
++struct ffxConfigureDescFrameGenerationKeyValue
++{
++    ffxConfigureDescHeader  header;
++    uint64_t                key;        ///< Configuration key, member of the FfxApiConfigureFrameGenerationKey enumeration.
++    uint64_t                u64;        ///< Integer value or enum value to set.
++    void*                   ptr;        ///< Pointer to set or pointer to value to set.
++};
++
++enum FfxApiConfigureFrameGenerationKey
++{
++    // No values.
++};
++
++#define FFX_API_QUERY_DESC_TYPE_FRAMEGENERATION_GPU_MEMORY_USAGE 0x00020007u
++struct ffxQueryDescFrameGenerationGetGPUMemoryUsage
++{
++    ffxQueryDescHeader header;
++    struct FfxApiEffectMemoryUsage* gpuMemoryUsageFrameGeneration;
++};
++
++#define FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATION_REGISTERDISTORTIONRESOURCE 0x00020008u
++struct ffxConfigureDescFrameGenerationRegisterDistortionFieldResource
++{
++    ffxConfigureDescHeader header;
++    struct FfxApiResource distortionField;            ///< A resource containing distortion offset data. Needs to be 2-component (ie. RG). Read by FG shaders via Sample. Resource's xy components encodes [UV coordinate of pixel after lens distortion effect- UV coordinate of pixel before lens distortion]. 
++};
++
++#define FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATION_HUDLESS 0x00020009u
++//Pass this optional linked struct at FG context creation to enable app to use different hudlessBackBufferformat (IE.RGBA8_UNORM) from backBufferFormat (IE. BGRA8_UNORM)
++struct ffxCreateContextDescFrameGenerationHudless
++{
++    ffxCreateContextDescHeader header;
++    uint32_t hudlessBackBufferFormat;           ///< The surface format for the hudless back buffer. One of the values from FfxApiSurfaceFormat.
++};
++
++#define FFX_API_DISPATCH_DESC_TYPE_FRAMEGENERATION_PREPARE_CAMERAINFO 0x0002000au
++//Link this struct after ffxDispatchDescFrameGenerationPrepare. This is a required input to FSR3.1.4 and onwards for best quality.
++struct ffxDispatchDescFrameGenerationPrepareCameraInfo
++{
++    ffxConfigureDescHeader header;
++    float                  cameraPosition[3];   ///< The camera position in world space
++    float                  cameraUp[3];         ///< The camera up normalized vector in world space.
++    float                  cameraRight[3];      ///< The camera right normalized vector in world space.
++    float                  cameraForward[3];    ///< The camera forward normalized vector in world space.
++};
++
++#if defined(__cplusplus)
++} // extern "C"
++#endif
+diff --git a/ryty_gpu/ryty_entry.cpp b/ryty_gpu/ryty_entry.cpp
+index dec74429..06abd022 100644
+--- a/ryty_gpu/ryty_entry.cpp
++++ b/ryty_gpu/ryty_entry.cpp
+@@ -26,6 +26,8 @@
+ #include "core/signals.h"
+ #include "core/loader/symbols_resolver.h"
+ #include "input/controller.h"
++#include "ryty_gpu/ryty_framegen.h"
++#include "video_core/renderer_vulkan/vk_pipeline_cache.h"
+ #include "ryty_gpu/ryty_input_bridge.h"
+ #include "ryty_gpu/ryty_library.h"
+ #include "sdl_window.h"
+@@ -36,6 +38,7 @@
+ #include "common/discord_rpc_handler.h"
+ #endif
+ #include <chrono>
++#include <cmath>
+ 
+ namespace Libraries::SystemService {
+ void NoteGameDrew(); // ryty_stubs.cpp: the splash screen ends at the game's first drawn frame
+@@ -110,24 +113,143 @@ void StartFirstDrawWatcher() {
+ 
+ // The FPS counter (shadGT's Show FPS Counter setting): the game's frames per second, in small
+ // type in the window's top left corner, over the game and the splash screen.
++// PERF-098: the precompile of stored shaders and pipelines, as a translucent blue bar with
++// shadowed white text near the bottom of the splash screen (and of the game, if it is still
++// going when the game starts drawing).
++void DrawPrecompileProgress() {
++    using Clock = std::chrono::steady_clock;
++    const auto progress = Vulkan::GetPrecompileProgress();
++    static Clock::time_point finished{};
++    static bool shown = false;
++    if (progress.total == 0) {
++        return;
++    }
++    float alpha = 1.0f;
++    if (progress.active) {
++        shown = true;
++        finished = {};
++    } else {
++        if (!shown) {
++            return; // nothing was left to build: no bar at all
++        }
++        if (finished == Clock::time_point{}) {
++            finished = Clock::now();
++        }
++        // "Done" stays a moment, then fades out.
++        const float since = std::chrono::duration<float>(Clock::now() - finished).count();
++        alpha = std::clamp(1.0f - (since - 1.5f) / 0.5f, 0.0f, 1.0f);
++        if (alpha <= 0.0f) {
++            return;
++        }
++    }
++    const auto a = [alpha](float value) { return static_cast<int>(value * alpha); };
++    const float fraction =
++        progress.total ? float(progress.done) / float(progress.total) : 0.0f;
++    char text[96];
++    if (progress.active) {
++        std::snprintf(text, sizeof(text), "Precompiling shaders   %llu / %llu   %.0f%%",
++                      static_cast<unsigned long long>(progress.done),
++                      static_cast<unsigned long long>(progress.total), fraction * 100.0f);
++    } else {
++        std::snprintf(text, sizeof(text), "Shaders ready");
++    }
++    auto* draw = ImGui::GetForegroundDrawList();
++    const ImGuiViewport* viewport = ImGui::GetMainViewport();
++    const float width = std::clamp(viewport->Size.x * 0.36f, 240.0f, 720.0f);
++    const float bar_height = 6.0f;
++    const ImVec2 bar_min{viewport->Pos.x + (viewport->Size.x - width) * 0.5f,
++                         viewport->Pos.y + viewport->Size.y * 0.90f};
++    const ImVec2 bar_max{bar_min.x + width, bar_min.y + bar_height};
++    draw->AddRectFilled(bar_min, bar_max, IM_COL32(25, 80, 190, a(70)), bar_height * 0.5f);
++    if (fraction > 0.0f) {
++        draw->AddRectFilled(bar_min, {bar_min.x + width * fraction, bar_max.y},
++                            IM_COL32(70, 150, 255, a(175)), bar_height * 0.5f);
++    }
++    const ImVec2 size = ImGui::CalcTextSize(text);
++    const ImVec2 at{bar_min.x + (width - size.x) * 0.5f, bar_min.y - size.y - 6.0f};
++    for (const ImVec2 offset : {ImVec2{-1, 0}, ImVec2{1, 0}, ImVec2{0, -1}, ImVec2{0, 1},
++                                ImVec2{1, 1}, ImVec2{2, 2}}) {
++        draw->AddText({at.x + offset.x, at.y + offset.y}, IM_COL32(0, 0, 0, a(150)), text);
++    }
++    draw->AddText(at, IM_COL32(255, 255, 255, a(235)), text);
++}
++
++// PERF-100: while a new shader compiles and the game is held, the same translucent style: a
++// notice with a moving bar over the last frame. Not for compiles shorter than 0.15 s.
++void DrawCompileNotice() {
++    using Clock = std::chrono::steady_clock;
++    static Clock::time_point paused_since{};
++    static Clock::time_point last_paused{};
++    const auto now = Clock::now();
++    if (Common::GuestClock::IsPaused()) {
++        if (paused_since == Clock::time_point{} || now - last_paused > std::chrono::milliseconds{300}) {
++            paused_since = now;
++        }
++        last_paused = now;
++    }
++    if (paused_since == Clock::time_point{} || now - paused_since < std::chrono::milliseconds{150} ||
++        now - last_paused > std::chrono::milliseconds{300}) {
++        return;
++    }
++    const char* text = "Compiling new shaders...";
++    auto* draw = ImGui::GetForegroundDrawList();
++    const ImGuiViewport* viewport = ImGui::GetMainViewport();
++    const ImVec2 size = ImGui::CalcTextSize(text);
++    // Bottom left: the text, with a small bar under it.
++    const float margin = 18.0f;
++    const float width = std::max(size.x, 160.0f);
++    const float bar_height = 4.0f;
++    const ImVec2 bar_min{viewport->Pos.x + margin,
++                         viewport->Pos.y + viewport->Size.y - margin - bar_height};
++    const ImVec2 bar_max{bar_min.x + width, bar_min.y + bar_height};
++    draw->AddRectFilled(bar_min, bar_max, IM_COL32(25, 80, 190, 70), bar_height * 0.5f);
++    // A segment sweeping across: the time a compile takes is not known.
++    const float t = std::fmod(std::chrono::duration<float>(now.time_since_epoch()).count(), 1.2f) / 1.2f;
++    const float segment = width * 0.3f;
++    const float x0 = bar_min.x + (width + segment) * t - segment;
++    draw->AddRectFilled({std::max(x0, bar_min.x), bar_min.y},
++                        {std::min(x0 + segment, bar_max.x), bar_max.y},
++                        IM_COL32(70, 150, 255, 175), bar_height * 0.5f);
++    const ImVec2 at{bar_min.x, bar_min.y - size.y - 5.0f};
++    for (const ImVec2 offset : {ImVec2{-1, 0}, ImVec2{1, 0}, ImVec2{0, -1}, ImVec2{0, 1},
++                                ImVec2{1, 1}, ImVec2{2, 2}}) {
++        draw->AddText({at.x + offset.x, at.y + offset.y}, IM_COL32(0, 0, 0, 150), text);
++    }
++    draw->AddText(at, IM_COL32(255, 255, 255, 235), text);
++}
++
+ void DrawFpsCounter() {
++    DrawPrecompileProgress();
++    if (!Vulkan::GetPrecompileProgress().active) {
++        DrawCompileNotice();
++    }
+     if (!EmulatorSettings.IsShowFpsCounter()) {
+         return;
+     }
+     using Clock = std::chrono::steady_clock;
+     static Clock::time_point window_start = Clock::now();
+     static u32 window_frames = DebugState.GetFrameNum();
++    static u64 window_shown = Vulkan::RytyFrameGen::ShownFrames();
+     static double fps = 0.0;
++    static double shown_fps = 0.0;
+     const auto now = Clock::now();
+     const double seconds = std::chrono::duration<double>(now - window_start).count();
+     if (seconds >= 0.5) {
+         const u32 frames = DebugState.GetFrameNum();
++        const u64 shown = Vulkan::RytyFrameGen::ShownFrames();
+         fps = (frames - window_frames) / seconds;
++        // With frame generation: the frames on screen too (game and generated).
++        shown_fps = shown > window_shown ? (shown - window_shown) / seconds : 0.0;
+         window_frames = frames;
++        window_shown = shown;
+         window_start = now;
+     }
+-    char text[32];
+-    std::snprintf(text, sizeof(text), "%.0f FPS", fps);
++    char text[48];
++    if (shown_fps > 0.0) {
++        std::snprintf(text, sizeof(text), "%.0f FPS (%.0f shown)", fps, shown_fps);
++    } else {
++        std::snprintf(text, sizeof(text), "%.0f FPS", fps);
++    }
+     auto* draw = ImGui::GetForegroundDrawList();
+     const ImVec2 origin = ImGui::GetMainViewport()->Pos;
+     const ImVec2 size = ImGui::CalcTextSize(text);
+diff --git a/ryty_gpu/ryty_framegen.cpp b/ryty_gpu/ryty_framegen.cpp
+new file mode 100644
+index 00000000..5cd1fd6f
+--- /dev/null
++++ b/ryty_gpu/ryty_framegen.cpp
+@@ -0,0 +1,470 @@
++// SPDX-FileCopyrightText: Copyright 2026 shadPS4 Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#include <windows.h>
++
++#include <algorithm>
++#include <array>
++#include <atomic>
++#include <cstdlib>
++#include <string>
++
++#include "common/logging/log.h"
++#include "core/emulator_settings.h"
++#include "ryty_gpu/ryty_framegen.h"
++#include "ryty_gpu/ryty_fsr3.h"
++#include "video_core/renderer_vulkan/vk_instance.h"
++#include "video_core/renderer_vulkan/vk_platform.h"
++
++#include "ryty_gpu/ffx_api/ffx_api.h"
++#include "ryty_gpu/ffx_api/ffx_framegeneration.h"
++#include "ryty_gpu/ffx_api/vk/ffx_api_vk.h"
++
++namespace Vulkan::RytyFrameGen {
++
++namespace {
++
++struct Api {
++    HMODULE module{};
++    PfnFfxCreateContext create_context{};
++    PfnFfxDestroyContext destroy_context{};
++    PfnFfxConfigure configure{};
++    PfnFfxQuery query{};
++    PfnFfxDispatch dispatch{};
++    bool tried{};
++};
++Api g_api;
++
++bool Load() {
++    if (g_api.tried) {
++        return g_api.module != nullptr;
++    }
++    g_api.tried = true;
++    wchar_t exe[MAX_PATH] = {};
++    GetModuleFileNameW(nullptr, exe, MAX_PATH);
++    std::wstring dir{exe};
++    dir = dir.substr(0, dir.find_last_of(L"\\/"));
++    const std::wstring path = dir + L"\\amd_fidelityfx_vk.dll";
++    HMODULE module = LoadLibraryExW(path.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
++    if (!module) {
++        LOG_WARNING(Render_Vulkan,
++                    "Frame generation: amd_fidelityfx_vk.dll could not be loaded (error {}); off",
++                    GetLastError());
++        return false;
++    }
++#define LOAD(field, name)                                                                          \
++    g_api.field = reinterpret_cast<decltype(g_api.field)>(                                         \
++        reinterpret_cast<void*>(GetProcAddress(module, name)))
++    LOAD(create_context, "ffxCreateContext");
++    LOAD(destroy_context, "ffxDestroyContext");
++    LOAD(configure, "ffxConfigure");
++    LOAD(query, "ffxQuery");
++    LOAD(dispatch, "ffxDispatch");
++#undef LOAD
++    if (!g_api.create_context || !g_api.destroy_context || !g_api.configure || !g_api.query ||
++        !g_api.dispatch) {
++        LOG_WARNING(Render_Vulkan, "Frame generation: amd_fidelityfx_vk.dll is missing functions");
++        FreeLibrary(module);
++        g_api = Api{.tried = true};
++        return false;
++    }
++    g_api.module = module;
++    return true;
++}
++
++void OnMessage(uint32_t type, const wchar_t* message) {
++    std::string text;
++    for (const wchar_t* c = message; c && *c; ++c) {
++        text.push_back(*c < 0x80 ? static_cast<char>(*c) : '?');
++    }
++    if (type == FFX_API_MESSAGE_TYPE_ERROR) {
++        LOG_ERROR(Render_Vulkan, "Frame generation: {}", text);
++    } else {
++        LOG_WARNING(Render_Vulkan, "Frame generation: {}", text);
++    }
++}
++
++FfxApiResource Resource(vk::Image image, vk::Format format, vk::Extent2D size, uint32_t usage,
++                        uint32_t state) {
++    FfxApiResourceDescription description{};
++    description.type = FFX_API_RESOURCE_TYPE_TEXTURE2D;
++    description.format = ffxApiGetSurfaceFormatVK(static_cast<VkFormat>(format));
++    description.width = size.width;
++    description.height = size.height;
++    description.depth = 1;
++    description.mipCount = 1;
++    description.flags = FFX_API_RESOURCE_FLAGS_NONE;
++    description.usage = usage;
++    return ffxApiGetResourceVK(static_cast<VkImage>(image), description, state);
++}
++
++// Generation itself runs from FidelityFX's swapchain; this sets how the picture is encoded.
++ffxReturnCode_t DispatchGeneration(ffxDispatchDescFrameGeneration* params, void* user) {
++    auto* context = static_cast<ffxContext*>(user);
++    const bool hdr = params->presentColor.description.format ==
++                     FFX_API_SURFACE_FORMAT_R10G10B10A2_UNORM;
++    params->backbufferTransferFunction =
++        hdr ? FFX_API_BACKBUFFER_TRANSFER_FUNCTION_PQ : FFX_API_BACKBUFFER_TRANSFER_FUNCTION_SRGB;
++    params->minMaxLuminance[0] = 0.0001f;
++    params->minMaxLuminance[1] = 1000.0f;
++    return g_api.dispatch(context, &params->header);
++}
++
++} // namespace
++
++std::atomic<u64> g_shown_frames{};
++
++bool Requested() {
++    return EmulatorSettings.IsFrameGenEnabled();
++}
++
++u64 ShownFrames() {
++    return g_shown_frames.load(std::memory_order_relaxed);
++}
++
++FrameGen::~FrameGen() {
++    Destroy();
++}
++
++bool FrameGen::CreateSwapchain(const Instance& instance, const vk::SwapchainCreateInfoKHR& info,
++                               vk::SwapchainKHR& swapchain) {
++    Destroy();
++    if (!Requested()) {
++        return false;
++    }
++    const vk::Queue async_queue = instance.GetFrameGenQueue(0);
++    const vk::Queue present_queue = instance.GetFrameGenQueue(1);
++    const vk::Queue acquire_queue = instance.GetFrameGenQueue(2);
++    if (!async_queue || !present_queue || !acquire_queue) {
++        static bool logged = false;
++        if (!logged) {
++            logged = true;
++            LOG_WARNING(Render_Vulkan, "Frame generation: the GPU's graphics queue family has "
++                                       "fewer than 4 queues; off");
++        }
++        return false;
++    }
++    if (!Load()) {
++        return false;
++    }
++    device = instance.GetDevice();
++    allocator = instance.GetAllocator();
++    const u32 family = instance.GetGraphicsQueueFamilyIndex();
++
++    VkSwapchainKHR handle = VK_NULL_HANDLE;
++    ffxCreateContextDescFrameGenerationSwapChainVK swapchain_desc{};
++    swapchain_desc.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_FGSWAPCHAIN_VK;
++    swapchain_desc.physicalDevice = static_cast<VkPhysicalDevice>(instance.GetPhysicalDevice());
++    swapchain_desc.device = static_cast<VkDevice>(device);
++    swapchain_desc.swapchain = &handle;
++    swapchain_desc.allocator = nullptr;
++    swapchain_desc.createInfo = static_cast<VkSwapchainCreateInfoKHR>(info);
++    swapchain_desc.gameQueue = {static_cast<VkQueue>(instance.GetGraphicsQueue()), family, nullptr};
++    swapchain_desc.asyncComputeQueue = {static_cast<VkQueue>(async_queue), family, nullptr};
++    swapchain_desc.presentQueue = {static_cast<VkQueue>(present_queue), family, nullptr};
++    swapchain_desc.imageAcquireQueue = {static_cast<VkQueue>(acquire_queue), family, nullptr};
++    ffxContext new_swapchain_context{};
++    auto result = g_api.create_context(&new_swapchain_context, &swapchain_desc.header, nullptr);
++    if (result != FFX_API_RETURN_OK || handle == VK_NULL_HANDLE) {
++        LOG_ERROR(Render_Vulkan, "Frame generation: creating its swapchain failed (code {}); off",
++                  result);
++        return false;
++    }
++    swapchain_context = new_swapchain_context;
++
++    ffxQueryDescSwapchainReplacementFunctionsVK functions{};
++    functions.header.type = FFX_API_QUERY_DESC_TYPE_FGSWAPCHAIN_FUNCTIONS_VK;
++    g_api.query(reinterpret_cast<ffxContext*>(&swapchain_context), &functions.header);
++    get_images = functions.pOutGetSwapchainImagesKHR;
++    acquire = functions.pOutAcquireNextImageKHR;
++    present = functions.pOutQueuePresentKHR;
++    present_count = reinterpret_cast<void*>(functions.pOutGetLastPresentCountFFXAPI);
++    if (!get_images || !acquire || !present) {
++        LOG_ERROR(Render_Vulkan, "Frame generation: its swapchain functions are missing; off");
++        Destroy();
++        return false;
++    }
++
++    // Pacing that sleeps between short spins and waits on fences, instead of spinning a core.
++    static FfxApiSwapchainFramePacingTuning tuning{0.1f, 0.1f, true, 2, true};
++    ffxConfigureDescFrameGenerationSwapChainKeyValueVK pacing{};
++    pacing.header.type = FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_KEYVALUE_VK;
++    pacing.key = FFX_API_CONFIGURE_FG_SWAPCHAIN_KEY_FRAMEPACINGTUNING;
++    pacing.ptr = &tuning;
++    g_api.configure(reinterpret_cast<ffxContext*>(&swapchain_context), &pacing.header);
++
++    ffxCreateBackendVKDesc backend{};
++    backend.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_VK;
++    backend.vkDevice = static_cast<VkDevice>(device);
++    backend.vkPhysicalDevice = static_cast<VkPhysicalDevice>(instance.GetPhysicalDevice());
++    backend.vkDeviceProcAddr = RytyFsr3::DeviceProcAddrShim();
++
++    ffxCreateContextDescFrameGeneration framegen_desc{};
++    framegen_desc.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATION;
++    framegen_desc.header.pNext = &backend.header;
++    framegen_desc.flags = 0;
++    framegen_desc.displaySize = {info.imageExtent.width, info.imageExtent.height};
++    framegen_desc.maxRenderSize = {info.imageExtent.width, info.imageExtent.height};
++    framegen_desc.backBufferFormat = ffxApiGetSurfaceFormatVK(static_cast<VkFormat>(info.imageFormat));
++    ffxContext new_framegen_context{};
++    result = g_api.create_context(&new_framegen_context, &framegen_desc.header, nullptr);
++    if (result != FFX_API_RETURN_OK) {
++        LOG_ERROR(Render_Vulkan, "Frame generation: creating it failed (code {}); off", result);
++        Destroy();
++        return false;
++    }
++    framegen_context = new_framegen_context;
++    display_size = info.imageExtent;
++    format = info.imageFormat;
++    frame_id = 0;
++    swapchain = vk::SwapchainKHR{handle};
++
++    ffxQueryGetProviderVersion version{};
++    version.header.type = FFX_API_QUERY_DESC_TYPE_GET_PROVIDER_VERSION;
++    g_api.query(reinterpret_cast<ffxContext*>(&framegen_context), &version.header);
++    LOG_INFO(Render_Vulkan, "Frame generation: {} on, {}x{} {}",
++             version.versionName ? version.versionName : "FSR 3.1", display_size.width,
++             display_size.height, vk::to_string(format));
++    (void)OnMessage;
++    return true;
++}
++
++void FrameGen::Destroy() {
++    g_shown_frames.store(0, std::memory_order_relaxed);
++    if (framegen_context) {
++        ffxContext context = framegen_context;
++        g_api.destroy_context(&context, nullptr);
++        framegen_context = nullptr;
++    }
++    if (swapchain_context) {
++        // Also destroys the swapchain it made.
++        ffxContext context = swapchain_context;
++        g_api.destroy_context(&context, nullptr);
++        swapchain_context = nullptr;
++    }
++    get_images = nullptr;
++    acquire = nullptr;
++    present = nullptr;
++}
++
++vk::Result FrameGen::GetImages(vk::Device device_, vk::SwapchainKHR swapchain,
++                               std::vector<vk::Image>& images) const {
++    u32 count = 0;
++    auto result = static_cast<vk::Result>(get_images(static_cast<VkDevice>(device_),
++                                                     static_cast<VkSwapchainKHR>(swapchain), &count,
++                                                     nullptr));
++    if (result != vk::Result::eSuccess) {
++        return result;
++    }
++    std::vector<VkImage> raw(count);
++    result = static_cast<vk::Result>(get_images(static_cast<VkDevice>(device_),
++                                                static_cast<VkSwapchainKHR>(swapchain), &count,
++                                                raw.data()));
++    images.assign(raw.begin(), raw.begin() + count);
++    return result;
++}
++
++vk::Result FrameGen::Acquire(vk::Device device_, vk::SwapchainKHR swapchain,
++                             vk::Semaphore semaphore, u32* image_index) const {
++    return static_cast<vk::Result>(acquire(static_cast<VkDevice>(device_),
++                                           static_cast<VkSwapchainKHR>(swapchain), UINT64_MAX,
++                                           static_cast<VkSemaphore>(semaphore), VK_NULL_HANDLE,
++                                           image_index));
++}
++
++vk::Result FrameGen::Present(vk::Queue queue, const vk::PresentInfoKHR& info) const {
++    const VkPresentInfoKHR raw = info;
++    return static_cast<vk::Result>(present(static_cast<VkQueue>(queue), &raw));
++}
++
++void FrameGen::Prepare(vk::CommandBuffer cmdbuf, vk::SwapchainKHR swapchain, vk::Extent2D size,
++                       bool hdr) {
++    if (!framegen_context) {
++        return;
++    }
++    if (size != aux_size) {
++        CreateAuxImages(cmdbuf, size);
++    }
++    const auto now = std::chrono::steady_clock::now();
++    const float delta_ms =
++        last_prepare.time_since_epoch().count() == 0
++            ? 1000.0f / 30.0f
++            : std::chrono::duration<float, std::milli>(now - last_prepare).count();
++    last_prepare = now;
++    ++frame_id;
++    if (present_count) {
++        g_shown_frames.store(reinterpret_cast<PFN_getLastPresentCountFFXAPI>(present_count)(
++                                 static_cast<VkSwapchainKHR>(swapchain)),
++                             std::memory_order_relaxed);
++    }
++    // Shown frames (game and generated) against game frames, every 10 s.
++    if (present_count && now - last_log >= std::chrono::seconds{10}) {
++        const u64 presents = reinterpret_cast<PFN_getLastPresentCountFFXAPI>(present_count)(
++            static_cast<VkSwapchainKHR>(swapchain));
++        if (last_log.time_since_epoch().count() != 0) {
++            const double seconds = std::chrono::duration<double>(now - last_log).count();
++            LOG_INFO(Render_Vulkan, "Frame generation: {:.1f} frames shown per second, {:.1f} from "
++                                    "the game",
++                     (presents - logged_presents) / seconds, (frame_id - logged_frames) / seconds);
++        }
++        last_log = now;
++        logged_presents = presents;
++        logged_frames = frame_id;
++    }
++
++    ffxConfigureDescFrameGeneration config{};
++    config.header.type = FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATION;
++    config.swapChain = static_cast<VkSwapchainKHR>(swapchain);
++    config.presentCallback = nullptr;
++    config.presentCallbackUserContext = nullptr;
++    config.frameGenerationCallback = &DispatchGeneration;
++    config.frameGenerationCallbackUserContext = &framegen_context;
++    // SHADGT_FRAMEGEN_AB=<seconds> (test): generation alternates on and off in one run, with
++    // the game's frame rate logged for each.
++    static const double ab_period = [] {
++        const char* env = std::getenv("SHADGT_FRAMEGEN_AB");
++        return env ? std::atof(env) : 0.0;
++    }();
++    bool enabled = true;
++    if (ab_period > 0.0) {
++        static const auto ab_start = now;
++        static u64 ab_frames[2]{};
++        static double ab_seconds[2]{};
++        static auto ab_last = now;
++        static auto ab_log = now;
++        const double t = std::chrono::duration<double>(now - ab_start).count();
++        enabled = static_cast<u64>(t / ab_period) % 2 == 0;
++        const double dt = std::chrono::duration<double>(now - ab_last).count();
++        ab_last = now;
++        ++ab_frames[enabled ? 0 : 1];
++        ab_seconds[enabled ? 0 : 1] += dt;
++        if (now - ab_log >= std::chrono::seconds{20}) {
++            ab_log = now;
++            LOG_INFO(Render_Vulkan, "Frame generation A/B: game {:.1f} fps with it, {:.1f} without",
++                     ab_frames[0] / std::max(0.001, ab_seconds[0]),
++                     ab_frames[1] / std::max(0.001, ab_seconds[1]));
++            ab_frames[0] = ab_frames[1] = 0;
++            ab_seconds[0] = ab_seconds[1] = 0.0;
++        }
++    }
++    config.frameGenerationEnabled = enabled;
++    config.allowAsyncWorkloads = false;
++    config.HUDLessColor = FfxApiResource{};
++    config.flags = 0;
++    config.onlyPresentGenerated = false;
++    config.generationRect = {0, 0, static_cast<int32_t>(size.width),
++                             static_cast<int32_t>(size.height)};
++    config.frameID = frame_id;
++    auto result = g_api.configure(reinterpret_cast<ffxContext*>(&framegen_context), &config.header);
++    if (result != FFX_API_RETURN_OK) {
++        static bool logged = false;
++        if (!logged) {
++            logged = true;
++            LOG_ERROR(Render_Vulkan, "Frame generation: configuring failed (code {})", result);
++        }
++        return;
++    }
++
++    ffxDispatchDescFrameGenerationPrepareCameraInfo camera{};
++    camera.header.type = FFX_API_DISPATCH_DESC_TYPE_FRAMEGENERATION_PREPARE_CAMERAINFO;
++    camera.cameraUp[1] = 1.0f;
++    camera.cameraRight[0] = 1.0f;
++    camera.cameraForward[2] = 1.0f;
++
++    ffxDispatchDescFrameGenerationPrepare prepare{};
++    prepare.header.type = FFX_API_DISPATCH_DESC_TYPE_FRAMEGENERATION_PREPARE;
++    prepare.header.pNext = &camera.header;
++    prepare.frameID = frame_id;
++    prepare.flags = 0;
++    prepare.commandList = static_cast<VkCommandBuffer>(cmdbuf);
++    prepare.renderSize = {size.width, size.height};
++    prepare.jitterOffset = {0.0f, 0.0f};
++    prepare.motionVectorScale = {1.0f, 1.0f};
++    prepare.frameTimeDelta = delta_ms;
++    prepare.unused_reset = false;
++    prepare.cameraNear = 0.1f;
++    prepare.cameraFar = 1000.0f;
++    prepare.cameraFovAngleVertical = 1.0f;
++    prepare.viewSpaceToMetersFactor = 1.0f;
++    prepare.depth = Resource(depth, vk::Format::eR32Sfloat, size, FFX_API_RESOURCE_USAGE_READ_ONLY,
++                             FFX_API_RESOURCE_STATE_PIXEL_COMPUTE_READ);
++    prepare.motionVectors = Resource(motion_vectors, vk::Format::eR16G16Sfloat, size,
++                                     FFX_API_RESOURCE_USAGE_READ_ONLY,
++                                     FFX_API_RESOURCE_STATE_PIXEL_COMPUTE_READ);
++    result = g_api.dispatch(reinterpret_cast<ffxContext*>(&framegen_context), &prepare.header);
++    if (result != FFX_API_RETURN_OK) {
++        static bool logged = false;
++        if (!logged) {
++            logged = true;
++            LOG_ERROR(Render_Vulkan, "Frame generation: preparing failed (code {})", result);
++        }
++    }
++    (void)hdr;
++}
++
++void FrameGen::CreateAuxImages(vk::CommandBuffer cmdbuf, vk::Extent2D size) {
++    // No motion vectors or depth from the game: zero motion and a flat depth image.
++    aux_size = size;
++    motion_vectors.Destroy();
++    depth.Destroy();
++    motion_vectors = VideoCore::UniqueImage(device, allocator);
++    depth = VideoCore::UniqueImage(device, allocator);
++    const auto make = [&](VideoCore::UniqueImage& image, vk::Format image_format) {
++        image.Create(vk::ImageCreateInfo{
++            .imageType = vk::ImageType::e2D,
++            .format = image_format,
++            .extent{.width = size.width, .height = size.height, .depth = 1},
++            .mipLevels = 1,
++            .arrayLayers = 1,
++            .samples = vk::SampleCountFlagBits::e1,
++            .usage = vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst,
++            .initialLayout = vk::ImageLayout::eUndefined,
++        });
++    };
++    make(motion_vectors, vk::Format::eR16G16Sfloat);
++    make(depth, vk::Format::eR32Sfloat);
++
++    constexpr vk::ImageSubresourceRange range = {
++        .aspectMask = vk::ImageAspectFlagBits::eColor,
++        .levelCount = 1,
++        .layerCount = 1,
++    };
++    const std::array<vk::Image, 2> images = {motion_vectors, depth};
++    std::array<vk::ImageMemoryBarrier2, 2> to_clear{};
++    std::array<vk::ImageMemoryBarrier2, 2> to_read{};
++    for (size_t i = 0; i < images.size(); ++i) {
++        to_clear[i] = vk::ImageMemoryBarrier2{
++            .srcStageMask = vk::PipelineStageFlagBits2::eNone,
++            .dstStageMask = vk::PipelineStageFlagBits2::eClear,
++            .dstAccessMask = vk::AccessFlagBits2::eTransferWrite,
++            .oldLayout = vk::ImageLayout::eUndefined,
++            .newLayout = vk::ImageLayout::eTransferDstOptimal,
++            .image = images[i],
++            .subresourceRange = range,
++        };
++        to_read[i] = vk::ImageMemoryBarrier2{
++            .srcStageMask = vk::PipelineStageFlagBits2::eClear,
++            .srcAccessMask = vk::AccessFlagBits2::eTransferWrite,
++            .dstStageMask = vk::PipelineStageFlagBits2::eComputeShader,
++            .dstAccessMask = vk::AccessFlagBits2::eShaderRead,
++            .oldLayout = vk::ImageLayout::eTransferDstOptimal,
++            .newLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
++            .image = images[i],
++            .subresourceRange = range,
++        };
++    }
++    cmdbuf.pipelineBarrier2(vk::DependencyInfo{
++        .imageMemoryBarrierCount = static_cast<u32>(to_clear.size()),
++        .pImageMemoryBarriers = to_clear.data(),
++    });
++    const vk::ClearColorValue zero{std::array<float, 4>{0.0f, 0.0f, 0.0f, 0.0f}};
++    for (const vk::Image image : images) {
++        cmdbuf.clearColorImage(image, vk::ImageLayout::eTransferDstOptimal, zero, range);
++    }
++    cmdbuf.pipelineBarrier2(vk::DependencyInfo{
++        .imageMemoryBarrierCount = static_cast<u32>(to_read.size()),
++        .pImageMemoryBarriers = to_read.data(),
++    });
++}
++
++} // namespace Vulkan::RytyFrameGen
+diff --git a/ryty_gpu/ryty_framegen.h b/ryty_gpu/ryty_framegen.h
+new file mode 100644
+index 00000000..8cd22cc3
+--- /dev/null
++++ b/ryty_gpu/ryty_framegen.h
+@@ -0,0 +1,80 @@
++// SPDX-FileCopyrightText: Copyright 2026 shadPS4 Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#pragma once
++
++#include <chrono>
++
++#include "common/types.h"
++#include "video_core/renderer_vulkan/vk_common.h"
++#include "video_core/texture_cache/image.h"
++
++namespace Vulkan {
++class Instance;
++}
++
++namespace Vulkan::RytyFrameGen {
++
++/// ryGT: AMD FSR 3.1 frame generation (amd_fidelityfx_vk.dll, GPU.framegen_enabled). FidelityFX
++/// replaces the swapchain with its own, which shows a generated frame between each pair of game
++/// frames from its own present thread. The game picture comes without motion vectors or depth,
++/// so the generated frames come from FSR's optical flow alone.
++class FrameGen {
++public:
++    ~FrameGen();
++
++    /// Creates the swapchain through FidelityFX. False when frame generation is off or
++    /// unavailable; the caller then creates a normal swapchain.
++    bool CreateSwapchain(const Instance& instance, const vk::SwapchainCreateInfoKHR& info,
++                         vk::SwapchainKHR& swapchain);
++    /// Destroys the swapchain and both FidelityFX contexts (the device must be idle).
++    void Destroy();
++
++    bool Active() const {
++        return swapchain_context != nullptr;
++    }
++
++    vk::Result GetImages(vk::Device device, vk::SwapchainKHR swapchain,
++                         std::vector<vk::Image>& images) const;
++    vk::Result Acquire(vk::Device device, vk::SwapchainKHR swapchain, vk::Semaphore semaphore,
++                       u32* image_index) const;
++    vk::Result Present(vk::Queue queue, const vk::PresentInfoKHR& info) const;
++
++    /// Per presented game frame, before the frame's command buffer is submitted: configures
++    /// frame generation and records its preparation.
++    void Prepare(vk::CommandBuffer cmdbuf, vk::SwapchainKHR swapchain, vk::Extent2D size,
++                 bool hdr);
++
++private:
++    void CreateAuxImages(vk::CommandBuffer cmdbuf, vk::Extent2D size);
++
++    vk::Device device{};
++    VmaAllocator allocator{};
++    void* swapchain_context{};
++    void* framegen_context{};
++    void* create_swapchain{};
++    void* destroy_swapchain{};
++    PFN_vkGetSwapchainImagesKHR get_images{};
++    PFN_vkAcquireNextImageKHR acquire{};
++    PFN_vkQueuePresentKHR present{};
++    void* present_count{}; // PFN_getLastPresentCountFFXAPI
++    u64 logged_presents{};
++    u64 logged_frames{};
++    std::chrono::steady_clock::time_point last_log{};
++    vk::Extent2D display_size{};
++    vk::Format format{};
++    bool hdr_output{};
++    u64 frame_id{};
++    std::chrono::steady_clock::time_point last_prepare{};
++    vk::Extent2D aux_size{};
++    VideoCore::UniqueImage motion_vectors;
++    VideoCore::UniqueImage depth;
++};
++
++/// True when GPU.framegen_enabled is on (the renderer then asks for extra queues).
++bool Requested();
++
++/// Frames shown so far (game and generated), for the FPS counter; 0 while generation is off.
++u64 ShownFrames();
++
++} // namespace Vulkan::RytyFrameGen
+diff --git a/ryty_gpu/ryty_fsr3.cpp b/ryty_gpu/ryty_fsr3.cpp
+index fedf0651..1d35123e 100644
+--- a/ryty_gpu/ryty_fsr3.cpp
++++ b/ryty_gpu/ryty_fsr3.cpp
+@@ -96,6 +96,10 @@ FfxApiResource Resource(vk::Image image, vk::Format format, vk::Extent2D size, u
+ 
+ } // namespace
+ 
++PFN_vkGetDeviceProcAddr DeviceProcAddrShim() {
++    return &GetDeviceProcAddr;
++}
++
+ Pass::~Pass() {
+     DestroyContext();
+ }
+diff --git a/ryty_gpu/ryty_fsr3.h b/ryty_gpu/ryty_fsr3.h
+index dc1ebf52..e14b32eb 100644
+--- a/ryty_gpu/ryty_fsr3.h
++++ b/ryty_gpu/ryty_fsr3.h
+@@ -67,4 +67,8 @@ private:
+     bool failed{};
+ };
+ 
++/// vkGetDeviceProcAddr for AMD's backend: extension names fall back to core functions, debug
++/// labels do nothing (also used by frame generation).
++PFN_vkGetDeviceProcAddr DeviceProcAddrShim();
++
+ } // namespace Vulkan::RytyFsr3
+diff --git a/ryty_gpu/ryty_game_patch.cpp b/ryty_gpu/ryty_game_patch.cpp
+index d738c390..58e5c5f6 100644
+--- a/ryty_gpu/ryty_game_patch.cpp
++++ b/ryty_gpu/ryty_game_patch.cpp
+@@ -10,13 +10,24 @@
+ 
+ #include <cstdio>
+ #include <algorithm>
++#include <chrono>
+ #include <cstdlib>
+ #include <cstring>
++#include <iterator>
++#include <mutex>
+ #include <string>
++#include <thread>
+ #include <vector>
+ #include <windows.h>
++#include <fmt/format.h>
+ 
++#include "common/perf_monitor.h"
+ #include "common/types.h"
++#include "core/debug_state.h"
++
++namespace Vulkan {
++void RytyWatchWrites(std::uint64_t address, std::uint32_t ms, std::string label); // DIAG-067
++}
+ 
+ namespace {
+ 
+@@ -62,9 +73,309 @@ bool Apply(u8* base, const Patch& patch) {
+     return true;
+ }
+ 
++// DIAG-097 (temporary): GT Sport's per-course view distances, GTRender::EnvironmentSetting::Misc
++// (reflection field list at eboot 0x2be6ac0; defaults set by its constructor at 0x6c7370). The
++// three calls of that constructor are redirected through a stub so every Misc instance is known;
++// a thread logs their values when the game changes them (RYGT_ENV_DIAG=1) and can scale chosen
++// fields (RYGT_ENV_SCALE=far=0.5,farPassFar=0.5,...) to test how draw counts react.
++struct MiscField {
++    const char* name;
++    u32 offset;
++};
++constexpr MiscField kMiscFields[] = {
++    {"far", 0x0},          {"baseNear", 0x4},        {"extra_far", 0xc},
++    {"depthPassFar", 0x10}, {"envFar", 0x18},         {"localEnvFar", 0x1c},
++    {"mirrorFar", 0x24},    {"reflectFar", 0x30},     {"farPassBaseNear", 0x34},
++    {"farPassFar", 0x38},   {"occluderFar", 0x3c},    {"tree_far", 0xbc},
++    {"tree_far_mirror", 0xc0}, {"tree_lod_off0", 0xc4}, {"tree_lod_off1", 0xc8},
++    {"tree_lod_off2", 0xcc},
++    // EnvironmentSetting::lod (LODSetting at 0x54c): discreteBase, smoothMeshLODBase,
++    // nonOnboardLODScale. Only meaningful for instances built by the EnvironmentSetting
++    // constructor (site 0).
++    {"lod.discreteBase", 0x54c}, {"lod.smoothMeshLODBase", 0x550},
++    {"lod.nonOnboardLODScale", 0x558},
++};
++constexpr u64 kMiscCtor = 0x6c7370;
++constexpr u64 kMiscCtorCalls[] = {0x10de5b9, 0x6c712a, 0x6c8faa};
++constexpr u64 kTextRvaShift = 0x10000;
++
++using MiscCtorFn = void(PS4_SYSV_ABI*)(void*);
++MiscCtorFn g_misc_ctor = nullptr;
++
++struct MiscInstance {
++    u8* base;
++    int site;
++    float seen[std::size(kMiscFields)];    // last value the game left there
++    float written[std::size(kMiscFields)]; // last value written by the scale override
++    std::string reject;
++};
++std::mutex g_misc_mutex;
++std::vector<MiscInstance> g_misc;
++float g_misc_scale[std::size(kMiscFields)];
++bool g_misc_any_scale = false;
++
++bool ReadableRange(const void* address, size_t size) {
++    MEMORY_BASIC_INFORMATION info{};
++    if (!VirtualQuery(address, &info, sizeof(info)) || info.State != MEM_COMMIT ||
++        (info.Protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0) {
++        return false;
++    }
++    return static_cast<const u8*>(address) + size <=
++           static_cast<const u8*>(info.BaseAddress) + info.RegionSize;
++}
++
++// Instances are often temporaries that the game frees again; one whose memory was reused must
++// not be written. Only whole EnvironmentSettings whose near/far planes and four LODSettings all
++// hold plausible values pass.
++bool LooksLikeEnvironmentSetting(const u8* base, std::string* reject_log = nullptr) {
++    if (!ReadableRange(base, 0x590)) {
++        return false;
++    }
++    const auto f = [base](u32 offset) {
++        float value;
++        std::memcpy(&value, base + offset, 4);
++        return value;
++    };
++    const auto in = [](float value, float lo, float hi) { return value >= lo && value <= hi; };
++    if (!in(f(0x0), 10.0f, 1e6f) || !in(f(0x4), 0.001f, 10.0f) || !in(f(0x8), 0.01f, 10.0f) ||
++        !in(f(0x14), 0.001f, 100.0f) || !in(f(0x18), 1.0f, 1e6f) || !in(f(0x1c), 1.0f, 1e7f) ||
++        !in(f(0x24), 1.0f, 1e6f) || !in(f(0x28), 1.0f, 1e6f) || !in(f(0x2c), 0.001f, 100.0f) ||
++        base[0x40] > 1) {
++        return false;
++    }
++    for (const u32 lod : {0x54c, 0x55c, 0x56c, 0x57c}) {
++        if (!in(f(lod), 0.0f, 100.0f) || !in(f(lod + 4), 0.0f, 100.0f) || base[lod + 8] > 1 ||
++            !in(f(lod + 0xc), 0.001f, 10.0f)) {
++            if (reject_log) {
++                *reject_log = fmt::format("LODSetting at {:#x}: {} {} {} {}", lod, f(lod),
++                                          f(lod + 4), base[lod + 8], f(lod + 0xc));
++            }
++            return false;
++        }
++    }
++    return true;
++}
++
++void MiscMonitor() {
++    // RYGT_ENV_AB=<seconds>: the scale is on and off for alternating periods of the same run,
++    // with draws per frame and frame rate logged for each state (run-to-run differences of the
++    // test race are larger than the effects measured).
++    const char* ab_env = std::getenv("RYGT_ENV_AB");
++    const u32 ab_ticks = ab_env ? static_cast<u32>(std::atof(ab_env) * 10.0) : 0;
++    struct AbTotals {
++        u64 draws, frames, ticks;
++    } ab[2]{};
++    u64 last_draws = Common::GetWorkCounters().draws.load();
++    u64 last_frames = DebugState.GetFrameNum();
++    for (u32 tick = 0;; ++tick) {
++        Sleep(100);
++        const bool scale_on = ab_ticks == 0 || (tick / ab_ticks) % 2 == 0;
++        if (ab_ticks) {
++            const u64 draws = Common::GetWorkCounters().draws.load();
++            const u64 frames = DebugState.GetFrameNum();
++            // The first tick after a switch still shows the previous state's frames.
++            if (tick % ab_ticks != 0) {
++                auto& totals = ab[scale_on ? 0 : 1];
++                totals.draws += draws - last_draws;
++                totals.frames += frames - last_frames;
++                ++totals.ticks;
++            }
++            last_draws = draws;
++            last_frames = frames;
++            if (tick % 200 == 199) {
++                const auto line = [](const AbTotals& t) {
++                    return fmt::format("{:.0f} draws/frame, {:.1f} fps",
++                                       double(t.draws) / std::max<u64>(1, t.frames),
++                                       t.frames * 10.0 / std::max<u64>(1, t.ticks));
++                };
++                std::fprintf(stderr, "[env] DIAG-097 A/B: scaled %s; original %s\n",
++                             line(ab[0]).c_str(), line(ab[1]).c_str());
++                std::fflush(stderr);
++                ab[0] = ab[1] = {};
++            }
++        }
++        std::scoped_lock lock{g_misc_mutex};
++        for (auto& instance : g_misc) {
++            const size_t span = 0x590;
++            std::string reject;
++            if (instance.site != 0 || !LooksLikeEnvironmentSetting(instance.base, &reject)) {
++                if (!reject.empty() && reject != instance.reject) {
++                    std::fprintf(stderr, "[env] DIAG-097 misc %p rejected: %s\n", instance.base,
++                                 reject.c_str());
++                    instance.reject = reject;
++                }
++                continue;
++            }
++            std::string changes;
++            for (size_t i = 0; i < std::size(kMiscFields); ++i) {
++                if (kMiscFields[i].offset >= span) {
++                    continue;
++                }
++                float* field = reinterpret_cast<float*>(instance.base + kMiscFields[i].offset);
++                const float value = *field;
++                if (value == instance.written[i]) {
++                    if (!scale_on) {
++                        *field = instance.seen[i]; // A/B: back to the game's value
++                        instance.written[i] = -1.0f;
++                    }
++                    continue; // our own override
++                }
++                if (value != instance.seen[i]) {
++                    changes += fmt::format(" {}={}", kMiscFields[i].name, value);
++                    instance.seen[i] = value;
++                }
++                // A copy of another instance's already scaled value is not scaled again.
++                const bool copied_override = std::ranges::any_of(
++                    g_misc, [&](const MiscInstance& other) { return other.written[i] == value; });
++                if (scale_on && g_misc_scale[i] != 1.0f && value > 0.0f && !copied_override) {
++                    const float scaled = value * g_misc_scale[i];
++                    *field = scaled;
++                    instance.written[i] = scaled;
++                }
++            }
++            if (!changes.empty()) {
++                std::fprintf(stderr, "[env] DIAG-097 misc %p (site %d):%s\n", instance.base,
++                             instance.site, changes.c_str());
++                std::fflush(stderr);
++            }
++            // RYGT_ENV_WATCH=<hex offset>: which code reads that field of the first instance that
++            // gets a course's values (a hardware read/write watch, at once and again 40 s later).
++            static const char* watch_env = std::getenv("RYGT_ENV_WATCH");
++            static const u32 watch_offset =
++                watch_env ? static_cast<u32>(std::strtoul(watch_env, nullptr, 16)) : 0;
++            static u8* watched = nullptr;
++            static u32 watch_tick = 0;
++            float far_plane;
++            std::memcpy(&far_plane, instance.base, 4);
++            if (watch_env && !watched && far_plane != 1000.0f) {
++                watched = instance.base;
++                watch_tick = tick;
++                Vulkan::RytyWatchWrites(reinterpret_cast<u64>(watched) + watch_offset, 3000,
++                                        fmt::format("rw env+{:#x}", watch_offset));
++            } else if (watch_env && watched == instance.base && tick == watch_tick + 400) {
++                Vulkan::RytyWatchWrites(reinterpret_cast<u64>(watched) + watch_offset, 2000,
++                                        fmt::format("rw env+{:#x} later", watch_offset));
++            }
++        }
++    }
++}
++
++void RecordMisc(void* self, int site) {
++    static std::once_flag started;
++    std::call_once(started, [] {
++        std::thread{MiscMonitor}.detach();
++    });
++    std::scoped_lock lock{g_misc_mutex};
++    for (auto& instance : g_misc) {
++        if (instance.base == self) {
++            instance.site = site;
++            std::fill(std::begin(instance.seen), std::end(instance.seen), -1.0f);
++            return;
++        }
++    }
++    MiscInstance instance{static_cast<u8*>(self), site, {}, {}, {}};
++    std::fill(std::begin(instance.seen), std::end(instance.seen), -1.0f);
++    std::fill(std::begin(instance.written), std::end(instance.written), -1.0f);
++    g_misc.push_back(instance);
++    // RYGT_ENV_WATCH_NEW=<hex offset>: reads and writes of that field of each new
++    // EnvironmentSetting for its first 1.5 s (skipped while another watch runs).
++    // (Not during boot: the watch logs through the renderer's log, which starts later.)
++    static const auto first_record = std::chrono::steady_clock::now();
++    if (const char* env = std::getenv("RYGT_ENV_WATCH_NEW");
++        env && site == 0 && std::chrono::steady_clock::now() - first_record > std::chrono::seconds{30}) {
++        const u32 offset = static_cast<u32>(std::strtoul(env, nullptr, 16));
++        Vulkan::RytyWatchWrites(reinterpret_cast<u64>(self) + offset, 1500,
++                                fmt::format("rw new env {} +{:#x}", self, offset));
++    }
++}
++
++template <int Site>
++void PS4_SYSV_ABI MiscCtorHook(void* self) {
++    g_misc_ctor(self);
++    RecordMisc(self, Site);
++}
++
++// Memory for jump stubs within +-2 GB of the game's code, so its rel32 calls can reach them.
++u8* AllocNear(u8* base) {
++    SYSTEM_INFO system{};
++    GetSystemInfo(&system);
++    const u64 granularity = system.dwAllocationGranularity;
++    for (u64 distance = granularity; distance < (1ULL << 30); distance += granularity) {
++        for (const s64 sign : {-1, 1}) {
++            const u64 address =
++                (reinterpret_cast<u64>(base) + sign * static_cast<s64>(distance)) & ~(granularity - 1);
++            if (void* memory = VirtualAlloc(reinterpret_cast<void*>(address), 0x1000,
++                                            MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE)) {
++                return static_cast<u8*>(memory);
++            }
++        }
++    }
++    return nullptr;
++}
++
++void InstallMiscHooks(u8* base) {
++    const char* diag = std::getenv("RYGT_ENV_DIAG");
++    const char* scale = std::getenv("RYGT_ENV_SCALE");
++    if (!(diag && diag[0] == '1') && !scale) {
++        return;
++    }
++    std::fill(std::begin(g_misc_scale), std::end(g_misc_scale), 1.0f);
++    if (scale) {
++        std::string list{scale};
++        for (size_t start = 0; start < list.size();) {
++            const size_t end = std::min(list.find(',', start), list.size());
++            const std::string item = list.substr(start, end - start);
++            const size_t eq = item.find('=');
++            for (size_t i = 0; eq != std::string::npos && i < std::size(kMiscFields); ++i) {
++                if (item.compare(0, eq, kMiscFields[i].name) == 0 &&
++                    std::strlen(kMiscFields[i].name) == eq) {
++                    g_misc_scale[i] = std::strtof(item.c_str() + eq + 1, nullptr);
++                    g_misc_any_scale = true;
++                    std::fprintf(stderr, "[env] scaling %s by %g\n", kMiscFields[i].name,
++                                 g_misc_scale[i]);
++                }
++            }
++            start = end + 1;
++        }
++    }
++    u8* stubs = AllocNear(base);
++    if (!stubs) {
++        std::fprintf(stderr, "[env] no memory near the game's code for hook stubs\n");
++        return;
++    }
++    g_misc_ctor = reinterpret_cast<MiscCtorFn>(base + kMiscCtor + kTextRvaShift);
++    void* hooks[] = {reinterpret_cast<void*>(&MiscCtorHook<0>),
++                     reinterpret_cast<void*>(&MiscCtorHook<1>),
++                     reinterpret_cast<void*>(&MiscCtorHook<2>)};
++    for (size_t i = 0; i < std::size(kMiscCtorCalls); ++i) {
++        u8* call = base + kMiscCtorCalls[i] + kTextRvaShift;
++        s32 rel = 0;
++        std::memcpy(&rel, call + 1, 4);
++        if (call[0] != 0xe8 || call + 5 + rel != base + kMiscCtor + kTextRvaShift) {
++            std::fprintf(stderr, "[env] call at %#llx is not the Misc constructor, not hooked\n",
++                         static_cast<unsigned long long>(kMiscCtorCalls[i]));
++            continue;
++        }
++        u8* stub = stubs + i * 16;
++        const u8 jump[6] = {0xff, 0x25, 0, 0, 0, 0}; // jmp qword ptr [rip]
++        std::memcpy(stub, jump, 6);
++        std::memcpy(stub + 6, &hooks[i], 8);
++        const s32 new_rel = static_cast<s32>(stub - (call + 5));
++        DWORD old_protect = 0;
++        VirtualProtect(call, 5, PAGE_EXECUTE_READWRITE, &old_protect);
++        std::memcpy(call + 1, &new_rel, 4);
++        DWORD ignored = 0;
++        VirtualProtect(call, 5, old_protect, &ignored);
++        FlushInstructionCache(GetCurrentProcess(), call, 5);
++    }
++    FlushInstructionCache(GetCurrentProcess(), stubs, 0x1000);
++    std::fprintf(stderr, "[env] DIAG-097 Misc constructor hooks installed\n");
++}
++
+ } // namespace
+ 
+ void RytyApplyGamePatches() {
++    InstallMiscHooks(reinterpret_cast<u8*>(GetModuleHandleA(nullptr)));
+     auto* base = reinterpret_cast<u8*>(GetModuleHandleA(nullptr));
+     char buffer[4096];
+     const DWORD length = GetEnvironmentVariableA("RYGT_PATCH", buffer, sizeof(buffer));
+diff --git a/ryty_gpu/ryty_stubs.cpp b/ryty_gpu/ryty_stubs.cpp
+index 0e9853ff..52169213 100644
+--- a/ryty_gpu/ryty_stubs.cpp
++++ b/ryty_gpu/ryty_stubs.cpp
+@@ -1,6 +1,7 @@
+ // Emulator-core pieces the renderer and window reference but that have no role when Ryty runs the
+ // game: the emulator object, guest signal dispatch, CPU patching, game archives and the overlays.
+ 
++#include "video_core/renderer_vulkan/vk_pipeline_cache.h"
+ #include <windows.h>
+ #include <algorithm>
+ #include <atomic>
+@@ -176,8 +177,10 @@ static std::atomic<bool> g_splash_hidden{false};
+ static std::atomic<bool> g_game_drew{false};
+ 
+ bool IsSplashVisible() {
+-    return EmulatorSettings.IsShowSplash() && !(g_splash_hidden.load(std::memory_order_relaxed) &&
+-                                                g_game_drew.load(std::memory_order_relaxed));
++    // PERF-102: also while the shader precompile holds the game.
++    return Vulkan::PrecompileHoldsGame() ||
++           (EmulatorSettings.IsShowSplash() && !(g_splash_hidden.load(std::memory_order_relaxed) &&
++                                                 g_game_drew.load(std::memory_order_relaxed)));
+ }
+ 
+ void NoteGameDrew() {
+diff --git a/ryty_gpu/ryty_write_watch.cpp b/ryty_gpu/ryty_write_watch.cpp
+index 5cca2fad..a2bc1862 100644
+--- a/ryty_gpu/ryty_write_watch.cpp
++++ b/ryty_gpu/ryty_write_watch.cpp
+@@ -25,10 +25,12 @@ struct Hit {
+     std::uint64_t rip;
+     std::uint64_t value;
+     std::uint64_t rcx, rdx, rbx, rsi, rdi, r11, rsp, r12, below_rsp_16, below_rsp_8, r14, r15;
++    std::uint64_t rax, r8, r9, r10, r13;
+ };
+ 
+ std::atomic<bool> g_active{false};
+ std::atomic<bool> g_execute{false}; // an instruction breakpoint instead of a write watch
++std::atomic<bool> g_read_write{false}; // DIAG-097: reads trap too
+ std::atomic<std::uint64_t> g_address{0};
+ std::array<Hit, 2048> g_hits{};
+ std::atomic<std::uint32_t> g_num_hits{0};
+@@ -54,15 +56,23 @@ LONG CALLBACK OnException(EXCEPTION_POINTERS* pointers) {
+         const std::uint64_t address = g_address.load(std::memory_order_relaxed);
+         const std::uint32_t index = g_num_hits.fetch_add(1, std::memory_order_relaxed);
+         if (index < g_hits.size()) {
++            // Reading the watched address here would trap again in read/write mode.
++            const std::uint64_t value =
++                g_read_write.load(std::memory_order_relaxed)
++                    ? 0
++                    : *reinterpret_cast<const volatile std::uint64_t*>(address);
+             g_hits[index] = {NowNs(),      GetCurrentThreadId(),
+-                             context->Rip, *reinterpret_cast<const volatile std::uint64_t*>(address),
++                             context->Rip, value,
+                              context->Rcx, context->Rdx,
+                              context->Rbx, context->Rsi,
+                              context->Rdi, context->R11,
+                              context->Rsp, context->R12,
+                              *reinterpret_cast<const volatile std::uint64_t*>(context->Rsp - 16),
+                              *reinterpret_cast<const volatile std::uint64_t*>(context->Rsp - 8),
+-                             context->R14, context->R15};
++                             context->R14, context->R15,
++                             context->Rax, context->R8,
++                             context->R9,  context->R10,
++                             context->R13};
+         }
+     }
+     if (g_execute.load(std::memory_order_relaxed)) {
+@@ -98,7 +108,9 @@ void SetBreakpoint(std::uint64_t address) {
+                 context.Dr7 &= ~((0xFull << 16) | 3ull);
+                 if (address != 0) {
+                     context.Dr0 = address;
+-                    context.Dr7 |= g_execute ? 1ull : (1ull | (1ull << 16) | (3ull << 18));
++                    context.Dr7 |= g_execute      ? 1ull
++                                   : g_read_write ? (1ull | (3ull << 16) | (3ull << 18))
++                                                  : (1ull | (1ull << 16) | (3ull << 18));
+                 } else {
+                     context.Dr0 = 0;
+                 }
+@@ -163,6 +175,8 @@ void RytyWatchWrites(std::uint64_t address, std::uint32_t ms, std::string label)
+     // A label starting with "exec" makes it an instruction breakpoint at address (registers are
+     // captured each time that instruction is about to run).
+     g_execute.store(label.starts_with("exec"));
++    // A label starting with "rw" makes it a read/write watch.
++    g_read_write.store(label.starts_with("rw"));
+     if (!g_execute) {
+         address &= ~7ull;
+     }
+@@ -185,11 +199,13 @@ void RytyWatchWrites(std::uint64_t address, std::uint32_t ms, std::string label)
+             const bool vertex_like = has(0x3f815729) || has(0x3f6e90f7) || has(0x3f6ea9b5);
+             line += fmt::format(" | +{:.2f} ms thread {} at {} wrote {:016x}{} (rcx {:x} rdx {:x} "
+                                 "rbx {:x} rsi {:x} rdi {:x} r11 {:x} rsp {:x} r12 {:x} "
+-                                "[rsp-16] {:016x} [rsp-8] {:016x} r14 {:x} r15 {:x})",
++                                "[rsp-16] {:016x} [rsp-8] {:016x} r14 {:x} r15 {:x} rax {:x} r8 {:x} "
++                                "r9 {:x} r10 {:x} r13 {:x})",
+                                 (hit.ns - g_start_ns.load()) / 1e6, ThreadName(hit.tid),
+                                 Describe(hit.rip), hit.value, vertex_like ? " VERTEX-LIKE" : "",
+                                 hit.rcx, hit.rdx, hit.rbx, hit.rsi, hit.rdi, hit.r11, hit.rsp,
+-                                hit.r12, hit.below_rsp_16, hit.below_rsp_8, hit.r14, hit.r15);
++                                hit.r12, hit.below_rsp_16, hit.below_rsp_8, hit.r14, hit.r15,
++                                hit.rax, hit.r8, hit.r9, hit.r10, hit.r13);
+         }
+         if (count > 64) {
+             // Long lists go to a file, one hit per line.
+diff --git a/src/common/guest_clock.cpp b/src/common/guest_clock.cpp
+index 9a4c53b9..93059f65 100644
+--- a/src/common/guest_clock.cpp
++++ b/src/common/guest_clock.cpp
+@@ -44,6 +44,18 @@ void MarkGpuCommandThread() {
+     is_gpu_command_thread = true;
+ }
+ 
++void TakeHold() {
++    if (Enabled()) {
++        Counter().Pause(FencedRDTSC());
++    }
++}
++
++void ReleaseHold() {
++    if (Enabled()) {
++        Counter().Resume(FencedRDTSC());
++    }
++}
++
+ CompilePause::CompilePause() : active{is_gpu_command_thread && Enabled()} {
+     if (active) {
+         start = std::chrono::steady_clock::now();
+diff --git a/src/common/guest_clock.h b/src/common/guest_clock.h
+index 0761f1b8..91f5dcb3 100644
+--- a/src/common/guest_clock.h
++++ b/src/common/guest_clock.h
+@@ -107,6 +107,11 @@ bool IsPaused();
+ /// Marks the calling thread as the GPU command thread, whose compile waits hold the clocks.
+ void MarkGpuCommandThread();
+ 
++/// PERF-102: holds the guest clocks from any thread until ReleaseHold (the shader precompile
++/// on the splash screen). No-op when FIX-044 is off.
++void TakeHold();
++void ReleaseHold();
++
+ /// Holds the guest clocks for its lifetime when created on the GPU command thread.
+ class CompilePause {
+ public:
+diff --git a/src/common/thread.cpp b/src/common/thread.cpp
+index 8435a048..3ae466e5 100644
+--- a/src/common/thread.cpp
++++ b/src/common/thread.cpp
+@@ -90,6 +90,7 @@ namespace {
+ // PERF-088: the CPU sets and their efficiency classes (the highest class is the fast cores).
+ struct CoreClasses {
+     std::vector<ULONG> fast_ids;
++    std::vector<ULONG> slow_ids;
+     std::vector<s8> fast_by_index; // by group * 64 + logical processor index: 1 fast, 0 slow
+     bool hybrid = false;
+ };
+@@ -120,6 +121,8 @@ const CoreClasses& GetCoreClasses() {
+                 const bool fast = entry.CpuSet.EfficiencyClass == highest;
+                 if (fast) {
+                     result.fast_ids.push_back(entry.CpuSet.Id);
++                } else {
++                    result.slow_ids.push_back(entry.CpuSet.Id);
+                 }
+                 const size_t index = size_t(entry.CpuSet.Group) * 64 +
+                                      entry.CpuSet.LogicalProcessorIndex;
+@@ -158,6 +161,23 @@ void PreferPerformanceCores() {
+                              static_cast<ULONG>(classes.fast_ids.size()));
+ }
+ 
++void PreferEfficiencyCores() {
++    static const bool enabled = [] {
++        const char* env = std::getenv("SHADGT_BUILD_ON_SLOW_CORES");
++        return !(env && env[0] == '0');
++    }();
++    const auto& classes = GetCoreClasses();
++    if (!enabled || !classes.hybrid || classes.slow_ids.empty()) {
++        return;
++    }
++    SetThreadSelectedCpuSets(GetCurrentThread(), classes.slow_ids.data(),
++                             static_cast<ULONG>(classes.slow_ids.size()));
++}
++
++void AllowAllCores() {
++    SetThreadSelectedCpuSets(GetCurrentThread(), nullptr, 0);
++}
++
+ int CurrentCoreIsFast() {
+     const auto& classes = GetCoreClasses();
+     if (!classes.hybrid) {
+@@ -219,6 +239,10 @@ bool AccurateSleep(const std::chrono::nanoseconds duration, std::chrono::nanosec
+ 
+ void PreferPerformanceCores() {}
+ 
++void PreferEfficiencyCores() {}
++
++void AllowAllCores() {}
++
+ int CurrentCoreIsFast() {
+     return -1;
+ }
+diff --git a/src/common/thread.h b/src/common/thread.h
+index b7bef7d7..500b2a37 100644
+--- a/src/common/thread.h
++++ b/src/common/thread.h
+@@ -32,6 +32,14 @@ void PreferPerformanceCores();
+ /// -1 when the CPU has only one kind.
+ int CurrentCoreIsFast();
+ 
++/// PERF-097: on hybrid CPUs, keeps the calling thread on the efficiency cores (shader and
++/// pipeline compiles, so a burst of them leaves the fast cores to the game and the renderer).
++/// SHADGT_BUILD_ON_SLOW_CORES=0 turns it off.
++void PreferEfficiencyCores();
++
++/// Undoes PreferPerformanceCores/PreferEfficiencyCores for the calling thread.
++void AllowAllCores();
++
+ void SetThreadName(void* thread, const char* name);
+ 
+ bool AccurateSleep(std::chrono::nanoseconds duration, std::chrono::nanoseconds* remaining,
+diff --git a/src/core/emulator_settings.h b/src/core/emulator_settings.h
+index f3595ee5..77695292 100644
+--- a/src/core/emulator_settings.h
++++ b/src/core/emulator_settings.h
+@@ -421,6 +421,17 @@ struct GPUSettings {
+     Setting<bool> dlss_enabled{false};
+     // ryGT: with fsr_enabled, scale with AMD FSR 3.1 (amd_fidelityfx_vk.dll) instead of FSR 1.
+     Setting<bool> fsr3_enabled{true};
++    // ryGT: AMD FSR 3.1 frame generation (amd_fidelityfx_vk.dll) adds a generated frame between
++    // each pair of game frames.
++    Setting<bool> framegen_enabled{false};
++    // ryGT: builds every stored shader pipeline while the splash screen shows (PERF-098).
++    Setting<bool> precompile_shaders{true};
++    // ryGT: pauses the game while a new shader pipeline compiles, instead of drawing on without
++    // the objects that need it (PERF-100).
++    Setting<bool> compile_freeze{true};
++    // ryGT: with compile_freeze, how long a pause may go on building the upcoming draws'
++    // pipelines too (0 off; launcher: Off 0, Short 100, Medium 300, Long 1000) (PERF-101).
++    Setting<int> compile_batch_ms{0};
+     // ryGT: CPU accesses keep fresh GPU results (FIX-076), which GT Sport's sparks and tire smoke
+     // need; costs frames in races, so it can be turned off.
+     Setting<bool> particle_effects{true};
+@@ -442,6 +453,10 @@ struct GPUSettings {
+             make_override<GPUSettings>("rcas_attenuation", &GPUSettings::rcas_attenuation),
+             make_override<GPUSettings>("dlss_enabled", &GPUSettings::dlss_enabled),
+             make_override<GPUSettings>("fsr3_enabled", &GPUSettings::fsr3_enabled),
++            make_override<GPUSettings>("framegen_enabled", &GPUSettings::framegen_enabled),
++            make_override<GPUSettings>("precompile_shaders", &GPUSettings::precompile_shaders),
++            make_override<GPUSettings>("compile_freeze", &GPUSettings::compile_freeze),
++            make_override<GPUSettings>("compile_batch_ms", &GPUSettings::compile_batch_ms),
+             make_override<GPUSettings>("particle_effects", &GPUSettings::particle_effects),
+             make_override<GPUSettings>("dump_shaders", &GPUSettings::dump_shaders),
+             make_override<GPUSettings>("patch_shaders", &GPUSettings::patch_shaders),
+@@ -462,8 +477,9 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(GPUSettings, window_width, window_height, int
+                                    direct_memory_access_enabled, dump_shaders, patch_shaders,
+                                    vblank_frequency, full_screen, full_screen_mode, present_mode,
+                                    hdr_allowed, fsr_enabled, rcas_enabled, rcas_attenuation,
+-                                   dlss_enabled, fsr3_enabled, particle_effects, userfaultfd,
+-                                   inline_fetch_shader)
++                                   dlss_enabled, fsr3_enabled, framegen_enabled, precompile_shaders,
++                                   compile_freeze, compile_batch_ms, particle_effects,
++                                   userfaultfd, inline_fetch_shader)
+ 
+ // -------------------------------
+ // Vulkan settings
+@@ -729,6 +745,10 @@ public:
+     SETTING_FORWARD(m_gpu, RcasAttenuation, rcas_attenuation)
+     SETTING_FORWARD_BOOL(m_gpu, DlssEnabled, dlss_enabled)
+     SETTING_FORWARD_BOOL(m_gpu, Fsr3Enabled, fsr3_enabled)
++    SETTING_FORWARD_BOOL(m_gpu, FrameGenEnabled, framegen_enabled)
++    SETTING_FORWARD_BOOL(m_gpu, PrecompileShaders, precompile_shaders)
++    SETTING_FORWARD_BOOL(m_gpu, CompileFreeze, compile_freeze)
++    SETTING_FORWARD(m_gpu, CompileBatchMs, compile_batch_ms)
+     SETTING_FORWARD_BOOL(m_gpu, ParticleEffects, particle_effects)
+     SETTING_FORWARD(m_gpu, ReadbacksMode, readbacks_mode)
+     SETTING_FORWARD_BOOL(m_gpu, ReadbackLinearImagesEnabled, readback_linear_images_enabled)
+diff --git a/src/core/libraries/videoout/driver.cpp b/src/core/libraries/videoout/driver.cpp
+index 5420c7f5..431f9405 100644
+--- a/src/core/libraries/videoout/driver.cpp
++++ b/src/core/libraries/videoout/driver.cpp
+@@ -423,7 +423,16 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
+         }
+         if (Common::GuestClock::IsPaused()) {
+             // FIX-044: no vblank passes while the guest clocks are held for a shader or
+-            // pipeline compile, as no time passes for the game.
++            // pipeline compile, as no time passes for the game. PERF-100: the last frame is
++            // shown again, with the compile notice drawn over it (PERF-102: or the splash
++            // screen, before the game's first frame).
++            if (timer.GetTotalWait().count() < 0) {
++                if (!main_port.is_open) {
++                    DrawBlankFrame();
++                } else {
++                    DrawLastFrame();
++                }
++            }
+             timer.End();
+             continue;
+         }
+diff --git a/src/video_core/amdgpu/liverpool.cpp b/src/video_core/amdgpu/liverpool.cpp
+index da340800..fdeb5401 100644
+--- a/src/video_core/amdgpu/liverpool.cpp
++++ b/src/video_core/amdgpu/liverpool.cpp
+@@ -39,6 +39,7 @@
+ #include "video_core/buffer_cache/region_definitions.h"
+ #include "video_core/renderdoc.h"
+ #include "video_core/renderer_vulkan/vk_rasterizer.h"
++#include "core/libraries/system/systemservice.h"
+ #include "ryty_gpu/ryty_diag.h"
+ 
+ namespace AmdGpu {
+@@ -110,6 +111,33 @@ static void WriteDeferredFence(void* address, const void* data, u32 num_bytes) {
+     }
+ }
+ 
++// PERF-095 (opt-in, SHADGT_LAZY_ASC_EPOCH=1): a compute-queue submission or wait only bumps the
++// upload epoch once a compute queue records something that reads memory (a dispatch or a DMA).
++// On a PS4 Pro, 3 of the 9 compute submissions per race frame only fence, flush caches or chain
++// empty IB links. In the October 13 race A/B it halved the epochs (8 -> 4 per frame) without a
++// measurable gain (run-to-run noise ~10%), so it stays off.
++static bool LazyAscEpochEnabled() {
++    static const bool enabled = [] {
++        const char* env = std::getenv("SHADGT_LAZY_ASC_EPOCH");
++        return env != nullptr && env[0] == '1';
++    }();
++    return enabled;
++}
++static std::atomic<bool> g_asc_epoch_pending{false};
++static void NoteAscEpoch() {
++    if (LazyAscEpochEnabled()) {
++        g_asc_epoch_pending.store(true, std::memory_order_release);
++    } else {
++        VideoCore::BumpUploadEpoch();
++    }
++}
++static void BumpPendingAscEpoch() {
++    if (g_asc_epoch_pending.load(std::memory_order_acquire) &&
++        g_asc_epoch_pending.exchange(false, std::memory_order_acq_rel)) {
++        VideoCore::BumpUploadEpoch();
++    }
++}
++
+ // PERF-DIAG-009: how long each queue's command processing is blocked in wait packets, and on
+ // which addresses, reported every 2 s. Only the command processor thread updates it.
+ enum class FrontendWait : u32 {
+@@ -125,7 +153,12 @@ enum class FrontendWait : u32 {
+ static void RecordFrontendWait(FrontendWait kind, uintptr_t address,
+                                std::chrono::steady_clock::time_point start) {
+     // PERF-012: whoever the queue waited for may have written memory later draws read.
+-    VideoCore::BumpUploadEpoch();
++    // PERF-095: for a compute queue, only once it records a memory read.
++    if (kind >= FrontendWait::AscWaitRegMem) {
++        NoteAscEpoch();
++    } else {
++        VideoCore::BumpUploadEpoch();
++    }
+     static constexpr std::array<const char*, size_t(FrontendWait::Count)> Names = {
+         "gfx WAIT_REG_MEM", "gfx VO label",      "gfx MEM_SEMAPHORE", "gfx REWIND",
+         "asc WAIT_REG_MEM", "asc MEM_SEMAPHORE", "asc REWIND"};
+@@ -1216,8 +1249,21 @@ void Liverpool::Process(std::stop_token stoken) {
+         }
+         {
+             std::unique_lock lk{submit_mutex};
+-            Common::CondvarWait(submit_cv, lk, stoken,
+-                                [this] { return num_commands || num_tasks || submit_done; });
++            const auto has_work = [this] { return num_commands || num_tasks || submit_done; };
++            // PERF-098: while the splash screen shows, or stored pipelines remain, the idle
++            // command thread queues stored pipeline builds every few milliseconds.
++            while (!has_work() && !stoken.stop_requested() && rasterizer &&
++                   (Libraries::SystemService::IsSplashVisible() ||
++                    Vulkan::GetPrecompileProgress().active)) {
++                if (submit_cv.wait_for(lk, stoken, std::chrono::milliseconds{5}, has_work)) {
++                    break;
++                }
++                lk.unlock();
++                rasterizer->GetPipelineCache().IdlePrewarm(
++                    Libraries::SystemService::IsSplashVisible());
++                lk.lock();
++            }
++            Common::CondvarWait(submit_cv, lk, stoken, has_work);
+         }
+         if (stoken.stop_requested()) {
+             break;
+@@ -2834,6 +2880,7 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
+             if (SkipRegisterSpaceDmaData(dma_data, "compute")) {
+                 break;
+             }
++            BumpPendingAscEpoch(); // PERF-095: this queue now reads memory
+             // PERF-031: copies run on the recorder thread in order with the dispatches around them.
+             if (dma_data->src_sel == DmaDataSrc::Data && dma_data->dst_sel == DmaDataDst::Gds) {
+                 RecordDma(
+@@ -2929,6 +2976,7 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
+         }
+         case PM4ItOpcode::DispatchDirect: {
+             const auto* dispatch_direct = reinterpret_cast<const PM4CmdDispatchDirect*>(header);
++            BumpPendingAscEpoch(); // PERF-095: this queue now reads memory
+             if (auto it = std::ranges::find(indirect_patches, header, &IndirectPatch::header);
+                 it != indirect_patches.end()) {
+                 const auto size = sizeof(PM4CmdDispatchIndirect::GroupDimensions);
+@@ -2962,6 +3010,7 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
+         case PM4ItOpcode::DispatchIndirect: {
+             const auto* dispatch_indirect =
+                 reinterpret_cast<const PM4CmdDispatchIndirectMec*>(header);
++            BumpPendingAscEpoch(); // PERF-095: this queue now reads memory
+             auto& cs_program = GetCsRegs();
+             const auto ib_address = dispatch_indirect->Address<VAddr>();
+             const auto size = sizeof(PM4CmdDispatchIndirect::GroupDimensions);
+@@ -3565,7 +3614,7 @@ void Liverpool::SubmitAsc(u32 gnm_vqid, std::span<const u32> acb) {
+     auto& queue = mapped_queues[gnm_vqid];
+ 
+     const auto vqid = gnm_vqid - 1;
+-    VideoCore::BumpUploadEpoch();
++    NoteAscEpoch(); // PERF-095
+     const auto& task = ProcessCompute(acb, vqid);
+     {
+         std::scoped_lock lock{queue.m_access};
+diff --git a/src/video_core/renderer_vulkan/build_queue.h b/src/video_core/renderer_vulkan/build_queue.h
+index bed9397e..6b8daaeb 100644
+--- a/src/video_core/renderer_vulkan/build_queue.h
++++ b/src/video_core/renderer_vulkan/build_queue.h
+@@ -3,6 +3,8 @@
+ 
+ #pragma once
+ 
++#include <algorithm>
++#include <atomic>
+ #include <chrono>
+ #include <condition_variable>
+ #include <deque>
+@@ -25,7 +27,20 @@ public:
+     using Clock = std::chrono::steady_clock;
+     enum class Kind { Urgent, Normal, Background };
+ 
+-    explicit BuildQueue(u32 max_background_) : max_background{max_background_} {}
++    explicit BuildQueue(u32 max_background_, u32 max_boost_ = 0)
++        : max_background{max_background_}, max_boost{std::max(max_background_, max_boost_)} {}
++
++    /// PERF-098: while the splash screen shows, background jobs run on every worker and are
++    /// never paused (no game draw waits for a pipeline yet).
++    bool Boosted() const {
++        return boost.load(std::memory_order_relaxed);
++    }
++
++    void SetBoost(bool on) {
++        if (boost.exchange(on) != on) {
++            cv.notify_all();
++        }
++    }
+ 
+     void Push(Job&& job, Kind kind) {
+         {
+@@ -57,11 +72,14 @@ public:
+                 job = std::move(jobs.front());
+                 jobs.pop_front();
+                 is_background = false;
++                ++running_foreground;
+                 return true;
+             }
+             const auto now = Clock::now();
+-            const bool paused = now < pause_until;
+-            if (!background.empty() && !paused && running_background < max_background) {
++            const bool boosted = boost.load(std::memory_order_relaxed);
++            const bool paused = !boosted && now < pause_until;
++            const u32 limit = boosted ? max_boost : max_background;
++            if (!background.empty() && !paused && running_background < limit) {
+                 job = std::move(background.front());
+                 background.pop_front();
+                 ++running_background;
+@@ -74,13 +92,25 @@ public:
+                 });
+             } else {
+                 cv.wait(lk, stop, [&] {
+-                    return !jobs.empty() ||
+-                           (!background.empty() && running_background < max_background);
++                    const u32 limit = boost.load(std::memory_order_relaxed) ? max_boost
++                                                                            : max_background;
++                    return !jobs.empty() || (!background.empty() && running_background < limit);
+                 });
+             }
+         }
+     }
+ 
++    void FinishedForeground() {
++        std::scoped_lock lk{mutex};
++        --running_foreground;
++    }
++
++    /// PERF-101: no draw or read-ahead build is queued or running.
++    bool ForegroundIdle() {
++        std::scoped_lock lk{mutex};
++        return jobs.empty() && running_foreground == 0;
++    }
++
+     void FinishedBackground() {
+         {
+             std::scoped_lock lk{mutex};
+@@ -107,11 +137,14 @@ public:
+ 
+ private:
+     const u32 max_background;
++    const u32 max_boost;
++    std::atomic<bool> boost{false};
+     std::mutex mutex;
+     std::condition_variable_any cv;
+     std::deque<Job> jobs;
+     std::deque<Job> background;
+     u32 running_background{};
++    u32 running_foreground{};
+     Clock::time_point pause_until{};
+ };
+ 
+diff --git a/src/video_core/renderer_vulkan/vk_instance.cpp b/src/video_core/renderer_vulkan/vk_instance.cpp
+index ea48c453..9d1f8ceb 100644
+--- a/src/video_core/renderer_vulkan/vk_instance.cpp
++++ b/src/video_core/renderer_vulkan/vk_instance.cpp
+@@ -9,6 +9,7 @@
+ #include "common/debug.h"
+ #include "common/perf_monitor.h"
+ #include "common/types.h"
++#include "core/emulator_settings.h"
+ #include "imgui/renderer/imgui_core.h"
+ #include "sdl_window.h"
+ #include "video_core/renderer_vulkan/liverpool_to_vk.h"
+@@ -397,10 +398,16 @@ bool Instance::CreateDevice() {
+         return false;
+     }
+ 
+-    static constexpr std::array queue_priorities = {1.0f};
++    // ryGT: with frame generation on, three more queues of the graphics family for its
++    // swapchain's own threads (async compute, present, image acquire), when the family has them.
++    static constexpr std::array queue_priorities = {1.0f, 1.0f, 1.0f, 1.0f};
++    const u32 num_queues = EmulatorSettings.IsFrameGenEnabled() &&
++                                   family_properties[queue_family_index].queueCount >= 4
++                               ? 4u
++                               : 1u;
+     const vk::DeviceQueueCreateInfo queue_info = {
+         .queueFamilyIndex = queue_family_index,
+-        .queueCount = static_cast<u32>(queue_priorities.size()),
++        .queueCount = num_queues,
+         .pQueuePriorities = queue_priorities.data(),
+     };
+ 
+@@ -618,6 +625,10 @@ bool Instance::CreateDevice() {
+ 
+     graphics_queue = device->getQueue(queue_family_index, 0);
+     present_queue = device->getQueue(queue_family_index, 0);
++    framegen_queues.clear();
++    for (u32 i = 1; i < num_queues; ++i) {
++        framegen_queues.push_back(device->getQueue(queue_family_index, i));
++    }
+ 
+     if (calibrated_timestamps) {
+         const auto [time_domains_result, time_domains] =
+diff --git a/src/video_core/renderer_vulkan/vk_instance.h b/src/video_core/renderer_vulkan/vk_instance.h
+index 9e545363..b0610e86 100644
+--- a/src/video_core/renderer_vulkan/vk_instance.h
++++ b/src/video_core/renderer_vulkan/vk_instance.h
+@@ -75,6 +75,12 @@ public:
+         return present_queue;
+     }
+ 
++    /// ryGT: extra queues of the graphics family for FSR 3.1 frame generation's swapchain
++    /// (async compute, present, image acquire); null when the family has too few queues.
++    vk::Queue GetFrameGenQueue(u32 index) const {
++        return index < framegen_queues.size() ? framegen_queues[index] : vk::Queue{};
++    }
++
+     TracyVkCtx GetProfilerContext() const {
+         return profiler_context;
+     }
+@@ -517,6 +523,7 @@ private:
+     VmaAllocator allocator{};
+     vk::Queue present_queue;
+     vk::Queue graphics_queue;
++    std::vector<vk::Queue> framegen_queues;
+     std::vector<vk::PhysicalDevice> physical_devices;
+     std::vector<std::string> available_extensions;
+     std::unordered_map<vk::Format, vk::FormatProperties3> format_properties;
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+index cc6c8c7e..8677c01e 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+@@ -78,6 +78,7 @@ public:
+ private:
+     void Run(std::stop_token stop, u32 index) {
+         Common::SetCurrentThreadName(fmt::format("shadGT:ShaderTranslate{}", index).c_str());
++        Common::PreferEfficiencyCores(); // PERF-097
+         Shader::Pools pools;
+         while (!stop.stop_requested()) {
+             std::shared_ptr<TranslateJob> job;
+@@ -145,12 +146,40 @@ static bool SaneTessConstants(const Shader::Info& hull, const AmdGpu::Liverpool*
+ void RytyWatchWrites(std::uint64_t address, std::uint32_t ms, std::string label); // DIAG-067
+ #endif
+ 
++// PERF-098: precompile progress.
++static std::atomic<u64> g_precompile_total{};
++static std::atomic<u64> g_precompile_done{};
++static std::atomic<bool> g_precompile_reading{};
++
++// PERF-102: while the precompile runs at start, the game waits on the splash screen (its clocks
++// held, so it sees no time pass), as if the splash screen were frozen until it is done.
++static std::atomic<bool> g_precompile_hold{};
++
++bool PrecompileHoldsGame() {
++    return g_precompile_hold.load(std::memory_order_relaxed);
++}
++
++static void ReleasePrecompileHold() {
++    if (g_precompile_hold.exchange(false)) {
++        Common::GuestClock::ReleaseHold();
++        LOG_WARNING(Render_Vulkan, "PERF-102: precompile done; the game continues");
++    }
++}
++
++PrecompileProgress GetPrecompileProgress() {
++    const u64 total = g_precompile_total.load(std::memory_order_relaxed);
++    const u64 done = std::min(total, g_precompile_done.load(std::memory_order_relaxed));
++    return {total, done, total != 0 && done < total};
++}
++
+ // PERF-019: worker threads that build graphics pipelines ahead of the draws that need them.
+ // PERF-038: stored pipelines are built in the background on a few of them, at low priority.
+ class PipelineCache::PipelineBuildWorkers {
+ public:
+-    PipelineBuildWorkers() : queue{std::max(1u, NumWorkers() / 4)} {
+-        for (u32 i = 0; i < NumWorkers(); ++i) {
++    PipelineBuildWorkers() : queue{std::max(1u, NumWorkers() / 4), AllCores()} {
++        // PERF-102: a worker for every core, the ones past NumWorkers() only for the precompile
++        // on the splash screen (the queue's boost).
++        for (u32 i = 0; i < AllCores(); ++i) {
+             threads.emplace_back([this](std::stop_token stop) { Work(stop); });
+         }
+     }
+@@ -170,11 +199,21 @@ public:
+     void PauseBackground(BuildQueue::Clock::time_point until) {
+         queue.PauseBackground(until);
+     }
++    void SetBoost(bool on) {
++        queue.SetBoost(on);
++    }
+     size_t BackgroundQueued() {
+         return queue.BackgroundQueued();
+     }
++    bool ForegroundIdle() {
++        return queue.ForegroundIdle();
++    }
+ 
+ private:
++    static u32 AllCores() {
++        return std::max(std::thread::hardware_concurrency(), NumWorkers());
++    }
++
+     static u32 NumWorkers() {
+         const u32 cores = std::max(std::thread::hardware_concurrency(), 4u);
+         // PERF-021: all but two cores (the command thread and the game's own main thread).
+@@ -183,21 +222,37 @@ private:
+ 
+     void Work(std::stop_token stop) {
+         Common::SetCurrentThreadName("shadGT:PipelineBuild");
++        // PERF-097: driver compiles stay off the cores the game and the recorder run on.
++        Common::PreferEfficiencyCores();
+         bool low_priority = false;
++        bool all_cores = false;
+         while (true) {
+             BuildQueue::Job job;
+             bool background = false;
+             if (!queue.Pop(job, background, stop)) {
+                 return;
+             }
+-            if (background != low_priority) {
+-                low_priority = background;
++            // PERF-102: while the game waits on the splash screen for the precompile, every core
++            // builds (and at normal priority); afterwards only the efficiency cores.
++            const bool boosted = queue.Boosted();
++            if (boosted != all_cores) {
++                all_cores = boosted;
++                if (all_cores) {
++                    Common::AllowAllCores();
++                } else {
++                    Common::PreferEfficiencyCores();
++                }
++            }
++            if ((background && !boosted) != low_priority) {
++                low_priority = background && !boosted;
+                 Common::SetCurrentThreadPriority(low_priority ? Common::ThreadPriority::Low
+                                                               : Common::ThreadPriority::Normal);
+             }
+             job();
+             if (background) {
+                 queue.FinishedBackground();
++            } else {
++                queue.FinishedForeground();
+             }
+         }
+     }
+@@ -561,7 +616,9 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
+             // turns it on unless SHADGT_PREWARM=0, so GTSport.exe runs without a launcher.
+             const char* prewarm = std::getenv("SHADGT_PREWARM");
+ #ifdef RYTY_GPU
+-            const bool prewarm_on = !prewarm || prewarm[0] != '0';
++            // PERF-098: GPU.precompile_shaders (on by default) unless the variable says otherwise.
++            const bool prewarm_on =
++                prewarm ? prewarm[0] != '0' : EmulatorSettings.IsPrecompileShaders();
+ #else
+             const bool prewarm_on = prewarm && prewarm[0] == '1';
+ #endif
+@@ -826,6 +883,7 @@ void PipelineCache::QueueBackgroundBuild(const std::shared_ptr<PipelineBuild>& b
+             FinishBuild(*build);
+             ++prewarm_built;
+         }
++        ++g_precompile_done; // PERF-098
+     });
+ }
+ 
+@@ -1015,6 +1073,20 @@ void PipelineCache::WaitForBuild(PipelineBuild& build, const DrawIndirectParams
+     while (build.started.load() && build.done.wait_for(500us) != std::future_status::ready) {
+         BuildQueuedStates(params, true);
+     }
++#ifdef RYTY_GPU
++    // PERF-101: GPU.compile_batch_ms (launcher "Shader compile batching"): with the game paused
++    // for a compile anyway, the builds of the upcoming draws the command thread read ahead are
++    // finished in the same pause, up to that long, so later draws pause less often.
++    static const u32 batch_ms = static_cast<u32>(std::max(0, EmulatorSettings.GetCompileBatchMs()));
++    if (batch_ms != 0 && !AsyncPipelines() && build_workers) {
++        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{batch_ms};
++        BuildQueuedStates(params, true);
++        while (!build_workers->ForegroundIdle() && std::chrono::steady_clock::now() < deadline) {
++            std::this_thread::sleep_for(500us);
++            BuildQueuedStates(params, true);
++        }
++    }
++#endif
+ }
+ 
+ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectParams params) {
+@@ -1872,6 +1944,13 @@ struct PipelineCache::PrewarmRecord {
+ void PipelineCache::PrewarmRead(std::stop_token stop) {
+     Common::SetCurrentThreadName("shadGT:PrewarmRead");
+     Common::SetCurrentThreadPriority(Common::ThreadPriority::Low);
++#ifdef RYTY_GPU
++    // PERF-102: the game waits on the splash screen until the precompile is done.
++    if (!g_precompile_hold.exchange(true)) {
++        Common::GuestClock::TakeHold();
++        LOG_WARNING(Render_Vulkan, "PERF-102: the game waits on the splash screen for the precompile");
++    }
++#endif
+     auto& store = Storage::DataBase::Instance();
+     // The profile file is written only when missing (by the removed precompile), so it can be
+     // older than most entries: GT Sport's is from October 6, the store's entries from October 6
+@@ -1904,6 +1983,8 @@ void PipelineCache::PrewarmRead(std::stop_token stop) {
+         keys.resize(std::min<size_t>(keys.size(), std::strtoull(limit, nullptr, 10)));
+     }
+     prewarm_total = keys.size();
++    g_precompile_total = keys.size(); // PERF-098
++    g_precompile_done = 0;
+     LOG_WARNING(Render_Vulkan, "PERF-038: building {} stored pipelines in the background",
+                 keys.size());
+     std::unordered_set<u64> listed;
+@@ -1955,6 +2036,7 @@ void PipelineCache::PrewarmRead(std::stop_token stop) {
+         }
+         if (!valid) {
+             ++skipped;
++            ++g_precompile_done; // PERF-098
+             continue;
+         }
+         std::unique_lock lk{prewarm_mutex};
+@@ -1970,17 +2052,44 @@ void PipelineCache::PrewarmRead(std::stop_token stop) {
+                 "missing stages or files)",
+                 keys.size(), skipped);
+     prewarm_reader_done = true;
++    if (keys.empty()) {
++        ReleasePrecompileHold(); // nothing stored yet (first start)
++    }
++}
++
++void PipelineCache::IdlePrewarm(bool splash) {
++    if (!prewarm_enabled) {
++        ReleasePrecompileHold();
++        return;
++    }
++    // PERF-102: released once every stored pipeline is built (or after 15 minutes at most).
++    static const auto first_call = std::chrono::steady_clock::now();
++    if (PrecompileHoldsGame() &&
++        ((prewarm_reader_done && !GetPrecompileProgress().active) ||
++         std::chrono::steady_clock::now() - first_call > std::chrono::minutes{15})) {
++        ReleasePrecompileHold();
++    }
++    if (build_workers) {
++        build_workers->SetBoost(splash);
++    } else if (splash) {
++        build_workers = std::make_unique<PipelineBuildWorkers>();
++        build_workers->SetBoost(true);
++    }
++    std::scoped_lock lk{lookup_mutex};
++    InstallPrewarmed(splash);
+ }
+ 
+-void PipelineCache::InstallPrewarmed() {
++void PipelineCache::InstallPrewarmed(bool force) {
+     if (!prewarm_enabled) {
+         return;
+     }
+     using namespace std::chrono_literals;
+     const auto start = std::chrono::steady_clock::now();
+     ReportPrewarm(start);
+-    // Not while new pipelines are being needed: the draws come first.
+-    if (prewarm_queued.load(std::memory_order_relaxed) == 0 || start - last_pipeline_miss < 2s) {
++    // Not while new pipelines are being needed: the draws come first (PERF-098: unless forced,
++    // while the splash screen shows).
++    if (prewarm_queued.load(std::memory_order_relaxed) == 0 ||
++        (!force && start - last_pipeline_miss < 2s)) {
+         return;
+     }
+     // The members a key is computed in are restored, so the draw sees what it would have.
+@@ -1989,7 +2098,7 @@ void PipelineCache::InstallPrewarmed() {
+     const auto saved_modules = modules;
+     const auto saved_runtime_infos = runtime_infos;
+     auto* const saved_fetch = fetch_shader;
+-    const auto budget = start + 300us;
++    const auto budget = start + (force ? 20000us : 300us);
+     do {
+         std::unique_ptr<PrewarmRecord> record;
+         {
+@@ -2006,6 +2115,7 @@ void PipelineCache::InstallPrewarmed() {
+             ++prewarm_stats.installed;
+         } else {
+             ++prewarm_stats.skipped;
++            ++g_precompile_done; // PERF-098
+         }
+     } while (std::chrono::steady_clock::now() < budget);
+     graphics_key = saved_key;
+@@ -2122,7 +2232,9 @@ bool PipelineCache::AsyncPipelines() {
+     static const bool enabled = [] {
+         const char* env = std::getenv("SHADGT_ASYNC_PIPELINES");
+ #ifdef RYTY_GPU
+-        const bool by_default = true;
++        // PERF-100: GPU.compile_freeze (on by default) pauses the game while a new pipeline
++        // compiles instead of skipping its draws.
++        const bool by_default = !EmulatorSettings.IsCompileFreeze();
+ #else
+         const bool by_default = false;
+ #endif
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.h b/src/video_core/renderer_vulkan/vk_pipeline_cache.h
+index 5f31bab7..eda12db3 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.h
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.h
+@@ -63,6 +63,16 @@ struct DrawIndirectParams {
+     bool tessellate_quads{};
+ };
+ 
++/// PERF-098: progress of building the stored pipelines (the precompile shown over the splash).
++struct PrecompileProgress {
++    u64 total;   ///< stored pipelines found
++    u64 done;    ///< built, already present or unusable
++    bool active; ///< still going
++};
++PrecompileProgress GetPrecompileProgress();
++/// PERF-102: the game waits on the splash screen for the precompile.
++bool PrecompileHoldsGame();
++
+ class PipelineCache {
+ public:
+     explicit PipelineCache(const Instance& instance, Scheduler& scheduler,
+@@ -100,6 +110,11 @@ public:
+         return profile;
+     }
+ 
++    /// PERF-098: on the command thread while it has no commands: takes prepared stored
++    /// pipelines and queues their builds (all of them as fast as the workers go while the
++    /// splash screen shows).
++    void IdlePrewarm(bool splash);
++
+ private:
+     bool RefreshGraphicsKey();
+     /// Registers the pipeline keys are built from: the current ones, or during read-ahead the
+@@ -129,7 +144,7 @@ private:
+     void QueueBackgroundBuild(const std::shared_ptr<PipelineBuild>& build);
+     /// PERF-038: on this thread, between draws: takes stored pipelines the reader thread
+     /// prepared and queues their background builds.
+-    void InstallPrewarmed();
++    void InstallPrewarmed(bool force = false);
+     struct PrewarmRecord;
+     bool InstallPrewarmRecord(PrewarmRecord& record);
+     void PrewarmRead(std::stop_token stop);
+diff --git a/src/video_core/renderer_vulkan/vk_presenter.cpp b/src/video_core/renderer_vulkan/vk_presenter.cpp
+index 41a84fc0..55d58f59 100644
+--- a/src/video_core/renderer_vulkan/vk_presenter.cpp
++++ b/src/video_core/renderer_vulkan/vk_presenter.cpp
+@@ -622,6 +622,27 @@ Frame* Presenter::PrepareLastFrame() {
+     }
+ 
+     Frame* frame = last_submit_frame;
++    {
++        // PERF-100: shown again while the game runs on (a compile pause): only while it is
++        // still free, and out of the free queue until Present returns it.
++        std::scoped_lock fl{free_mutex};
++        std::queue<Frame*> rest;
++        bool found = false;
++        while (!free_queue.empty()) {
++            Frame* f = free_queue.front();
++            free_queue.pop();
++            if (f == frame && !found) {
++                found = true;
++            } else {
++                rest.push(f);
++            }
++        }
++        free_queue = std::move(rest);
++        if (!found) {
++            return nullptr; // the GPU thread is already drawing a new frame into it
++        }
++        reusing_frame = frame;
++    }
+ 
+     while (true) {
+         vk::Result result = instance.GetDevice().waitForFences(frame->present_done, false,
+@@ -906,6 +927,12 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
+             std::scoped_lock fl{free_mutex};
+             free_queue.push(frame);
+             free_cv.notify_one();
++        } else if (frame == reusing_frame) {
++            // PERF-100: back to the free queue once shown again.
++            std::scoped_lock fl{free_mutex};
++            reusing_frame = nullptr;
++            free_queue.push(frame);
++            free_cv.notify_one();
+         }
+     };
+ 
+@@ -1108,6 +1135,7 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
+         cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
+                                vk::PipelineStageFlagBits::eAllCommands,
+                                vk::DependencyFlagBits::eByRegion, {}, {}, post_barrier);
++        swapchain.PrepareFrameGeneration(cmdbuf); // ryGT
+ 
+         if (profiler_ctx) {
+             TracyVkCollect(profiler_ctx, cmdbuf);
+diff --git a/src/video_core/renderer_vulkan/vk_presenter.h b/src/video_core/renderer_vulkan/vk_presenter.h
+index 24c051d7..565f378c 100644
+--- a/src/video_core/renderer_vulkan/vk_presenter.h
++++ b/src/video_core/renderer_vulkan/vk_presenter.h
+@@ -140,6 +140,9 @@ private:
+     std::vector<Frame> present_frames;
+     std::queue<Frame*> free_queue;
+     Frame* last_submit_frame;
++    /// PERF-100: the last frame shown again, taken out of the free queue meanwhile, so the GPU
++    /// thread cannot take it for a new frame (and reset its fence) while it is redrawn.
++    Frame* reusing_frame{};
+     std::mutex free_mutex;
+     std::condition_variable free_cv;
+     std::condition_variable_any frame_cv;
+diff --git a/src/video_core/renderer_vulkan/vk_swapchain.cpp b/src/video_core/renderer_vulkan/vk_swapchain.cpp
+index f2d6bbab..b8e796c8 100644
+--- a/src/video_core/renderer_vulkan/vk_swapchain.cpp
++++ b/src/video_core/renderer_vulkan/vk_swapchain.cpp
+@@ -70,10 +70,16 @@ void Swapchain::Create(u32 width_, u32 height_) {
+         .oldSwapchain = nullptr,
+     };
+ 
+-    auto [swapchain_result, chain] = instance.GetDevice().createSwapchainKHR(swapchain_info);
+-    ASSERT_MSG(swapchain_result == vk::Result::eSuccess, "Failed to create swapchain: {}",
+-               vk::to_string(swapchain_result));
+-    swapchain = chain;
++#ifdef RYTY_GPU
++    // ryGT: FSR 3.1 frame generation makes the swapchain when it is on.
++    if (!framegen.CreateSwapchain(instance, swapchain_info, swapchain))
++#endif
++    {
++        auto [swapchain_result, chain] = instance.GetDevice().createSwapchainKHR(swapchain_info);
++        ASSERT_MSG(swapchain_result == vk::Result::eSuccess, "Failed to create swapchain: {}",
++                   vk::to_string(swapchain_result));
++        swapchain = chain;
++    }
+ 
+     SetupImages();
+     RefreshSemaphores();
+@@ -104,9 +110,18 @@ void Swapchain::SetHDR(bool hdr) {
+ 
+ bool Swapchain::AcquireNextImage() {
+     vk::Device device = instance.GetDevice();
++#ifdef RYTY_GPU
++    vk::Result result =
++        framegen.Active()
++            ? framegen.Acquire(device, swapchain, image_acquired[frame_index], &image_index)
++            : device.acquireNextImageKHR(swapchain, std::numeric_limits<u64>::max(),
++                                         image_acquired[frame_index], VK_NULL_HANDLE,
++                                         &image_index);
++#else
+     vk::Result result =
+         device.acquireNextImageKHR(swapchain, std::numeric_limits<u64>::max(),
+                                    image_acquired[frame_index], VK_NULL_HANDLE, &image_index);
++#endif
+ 
+     switch (result) {
+     case vk::Result::eSuccess:
+@@ -136,7 +151,12 @@ bool Swapchain::Present() {
+         .pImageIndices = &image_index,
+     };
+ 
++#ifdef RYTY_GPU
++    auto result = framegen.Active() ? framegen.Present(instance.GetPresentQueue(), present_info)
++                                    : instance.GetPresentQueue().presentKHR(present_info);
++#else
+     auto result = instance.GetPresentQueue().presentKHR(present_info);
++#endif
+     if (result == vk::Result::eErrorOutOfDateKHR || result == vk::Result::eSuboptimalKHR) {
+         needs_recreation = true;
+     } else {
+@@ -266,9 +286,16 @@ void Swapchain::Destroy() {
+     }
+     images_view.clear();
+ 
++#ifdef RYTY_GPU
++    if (framegen.Active()) {
++        framegen.Destroy(); // also destroys its swapchain
++        swapchain = nullptr;
++    }
++#endif
+     if (swapchain) {
+         device.destroySwapchainKHR(swapchain);
+     }
++    swapchain = nullptr;
+ 
+     for (const auto& sem : image_acquired) {
+         device.destroySemaphore(sem);
+@@ -308,10 +335,19 @@ void Swapchain::RefreshSemaphores() {
+ 
+ void Swapchain::SetupImages() {
+     vk::Device device = instance.GetDevice();
+-    auto [images_result, imgs] = device.getSwapchainImagesKHR(swapchain);
+-    ASSERT_MSG(images_result == vk::Result::eSuccess, "Failed to create swapchain images: {}",
+-               vk::to_string(images_result));
+-    images = std::move(imgs);
++#ifdef RYTY_GPU
++    if (framegen.Active()) {
++        const auto images_result = framegen.GetImages(device, swapchain, images);
++        ASSERT_MSG(images_result == vk::Result::eSuccess, "Failed to get swapchain images: {}",
++                   vk::to_string(images_result));
++    } else
++#endif
++    {
++        auto [images_result, imgs] = device.getSwapchainImagesKHR(swapchain);
++        ASSERT_MSG(images_result == vk::Result::eSuccess, "Failed to create swapchain images: {}",
++                   vk::to_string(images_result));
++        images = std::move(imgs);
++    }
+     image_count = static_cast<u32>(images.size());
+     images_view.resize(image_count);
+     for (u32 i = 0; i < image_count; ++i) {
+diff --git a/src/video_core/renderer_vulkan/vk_swapchain.h b/src/video_core/renderer_vulkan/vk_swapchain.h
+index 826705d4..954c6702 100644
+--- a/src/video_core/renderer_vulkan/vk_swapchain.h
++++ b/src/video_core/renderer_vulkan/vk_swapchain.h
+@@ -7,6 +7,9 @@
+ #include <vector>
+ #include "common/types.h"
+ #include "video_core/renderer_vulkan/vk_common.h"
++#ifdef RYTY_GPU
++#include "ryty_gpu/ryty_framegen.h"
++#endif
+ 
+ namespace Frontend {
+ class WindowSDL;
+@@ -92,6 +95,13 @@ public:
+         return needs_hdr;
+     }
+ 
++    /// ryGT: frame generation's per-frame preparation, recorded before the present submit.
++    void PrepareFrameGeneration(vk::CommandBuffer cmdbuf) {
++#ifdef RYTY_GPU
++        framegen.Prepare(cmdbuf, swapchain, extent, needs_hdr);
++#endif
++    }
++
+ private:
+     /// Selects the best available swapchain image format
+     void FindPresentFormat();
+@@ -134,6 +144,9 @@ private:
+     bool needs_recreation = true;
+     bool needs_hdr = false;    // The game requested HDR swapchain
+     bool supports_hdr = false; // SC supports HDR output
++#ifdef RYTY_GPU
++    RytyFrameGen::FrameGen framegen; // ryGT: FSR 3.1 frame generation's swapchain when on
++#endif
+ };
+ 
+ } // namespace Vulkan
+-- 
+2.56.0.windows.1
+

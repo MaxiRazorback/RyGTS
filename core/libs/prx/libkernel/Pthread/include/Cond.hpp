@@ -6,6 +6,8 @@
 class CondOperations {
 public:
     static int AbsoluteTimedwait(PthreadCond* cond, PthreadMutex* mutex, const KernelTimespec* abstime);
+    /// Wakes one or all waiters; `caller` is noted as the signaller for RYGT_DIAG.
+    static int Signal(PthreadCond* cond, bool all, const void* caller);
 };
 
 extern "C" {

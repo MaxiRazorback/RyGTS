@@ -3,6 +3,13 @@
 
 #include "prx/libSceFontFt/include/FontFtDriver.hpp"
 #include "prx/libc/include/General.hpp"
+#include <freetype/internal/ftobjs.h>
+
+//gt sport uses an old freetype release btw, uses raster5 renderer which freetype 2.13 doesnt use
+extern "C" {
+extern const FT_Renderer_Class ft_raster1_renderer_class;
+extern const FT_Renderer_Class ft_raster5_renderer_class = ft_raster1_renderer_class;
+}
 
 #pragma GCC visibility push(default)
 

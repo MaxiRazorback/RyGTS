@@ -1,0 +1,517 @@
+diff --git a/ryty_gpu/ryty_entry.cpp b/ryty_gpu/ryty_entry.cpp
+index dd8883f..8e8c48e 100644
+--- a/ryty_gpu/ryty_entry.cpp
++++ b/ryty_gpu/ryty_entry.cpp
+@@ -80,6 +80,13 @@ void RunWindowThread() {
+         window.WaitEvent();
+     }
+     // The window was closed: end the game without DLL teardown (see Emulator::Shutdown).
++    // Stop trigger effects before the deliberate TerminateProcess skips SDL cleanup.
++    Input::TriggerFeedback::stopping = true;
++    const auto released = Input::TriggerFeedback::Vibration(0);
++    for (int slot = 0; slot < 4; ++slot) {
++        (*controllers)[slot]->SetTriggerFeedback(released, released, 0, 0);
++    }
++    std::this_thread::sleep_for(std::chrono::milliseconds(50)); // Flush queued HID releases.
+     TerminateProcess(GetCurrentProcess(), 0);
+ }
+ 
+diff --git a/ryty_gpu/ryty_game_patch.cpp b/ryty_gpu/ryty_game_patch.cpp
+index d826df7..dbd1dd5 100644
+--- a/ryty_gpu/ryty_game_patch.cpp
++++ b/ryty_gpu/ryty_game_patch.cpp
+@@ -28,6 +28,7 @@
+ #include "common/perf_monitor.h"
+ #include "common/types.h"
+ #include "core/debug_state.h"
++#include "input/trigger_feedback.h"
+ 
+ namespace Vulkan {
+ void RytyWatchWrites(std::uint64_t address, std::uint32_t ms, std::string label); // DIAG-067
+@@ -993,7 +994,33 @@ void InstallMirrorHalfRate(u8* base) {
+                       {std::begin(call), std::end(call)}, "GTS-008 rear-view mirror at half rate"});
+ }
+ 
++namespace {
++using TelemetryUpdateFn = void(PS4_SYSV_ABI*)(void*, void*);
++TelemetryUpdateFn g_telemetry_update{};
++void PS4_SYSV_ABI TelemetryUpdateHook(void* service, void* context) {
++    g_telemetry_update(service, context);
++    Input::TriggerFeedback::Publish(static_cast<const u8*>(service) + 0x1dc);
++}
++void InstallTriggerTelemetry(u8* base) {
++    // CUSA03220 v1.69: SimulatorInterface::update virtual slot, converter RVA.
++    // Validate both the slot and packet-builder magic before touching the table.
++    auto* slot = reinterpret_cast<TelemetryUpdateFn*>(base + 0x2858390);
++    auto original = reinterpret_cast<TelemetryUpdateFn>(base + 0x68cf20);
++    const u8 magic[] = {0xc7, 0x87, 0xdc, 0x01, 0, 0, 0x30, 0x53, 0x37, 0x47};
++    if (*slot != original || std::memcmp(base + 0x68cf53, magic, sizeof(magic)) != 0) return;
++    const char* enabled = std::getenv("RYGT_ADAPTIVE_TRIGGERS");
++    if (enabled && enabled[0] == '0') return;
++    DWORD protection;
++    if (!VirtualProtect(slot, sizeof(*slot), PAGE_READWRITE, &protection)) return;
++    g_telemetry_update = original;
++    *slot = &TelemetryUpdateHook;
++    DWORD ignored;
++    VirtualProtect(slot, sizeof(*slot), protection, &ignored);
++}
++} // namespace
++
+ void RytyApplyGamePatches() {
++    InstallTriggerTelemetry(reinterpret_cast<u8*>(GetModuleHandleA(nullptr)));
+     InstallMirrorHalfRate(reinterpret_cast<u8*>(GetModuleHandleA(nullptr)));
+     if (!WetReflectionsWanted()) {
+         // jne (reflect when wet) -> two nops
+diff --git a/ryty_gpu/ryty_input_bridge.cpp b/ryty_gpu/ryty_input_bridge.cpp
+index e3631f3..f84ba14 100644
+--- a/ryty_gpu/ryty_input_bridge.cpp
++++ b/ryty_gpu/ryty_input_bridge.cpp
+@@ -15,6 +15,7 @@
+ #include <cstdio>
+ #include <cstring>
+ #include <thread>
++#include <nlohmann/json.hpp>
+ 
+ #include "common/logging/log.h"
+ #include "common/singleton.h"
+@@ -186,6 +187,25 @@ std::uint8_t ClampAxis(s32 value) {
+     return static_cast<std::uint8_t>(value < 0 ? 0 : (value > 255 ? 255 : value));
+ }
+ 
++unsigned TriggerStrength() {
++    // The launcher writes per-game Input settings. Read at most once per second,
++    // so the slider can be adjusted while driving without restarting the game.
++    static auto next = std::chrono::steady_clock::time_point{};
++    static unsigned percent = 100;
++    const auto now = std::chrono::steady_clock::now();
++    if (now < next) return percent;
++    next = now + std::chrono::seconds(1);
++    const auto config = nlohmann::json::parse(ReadGameConfig(), nullptr, false);
++    if (config.is_discarded() || !config.is_object()) return percent;
++    const auto input = config.find("Input");
++    if (input == config.end() || !input->is_object()) return percent = 100;
++    const auto value = input->find("trigger_strength");
++    if (value == input->end() || !value->is_number_integer()) return percent = 100;
++    // Clamp using a wide type before conversion, including hand-edited JSON.
++    if (value->is_number_unsigned()) return percent = static_cast<unsigned>(std::min(value->get<std::uint64_t>(), std::uint64_t{200}));
++    return percent = static_cast<unsigned>(std::clamp(value->get<std::int64_t>(), std::int64_t{0}, std::int64_t{200}));
++}
++
+ void ForwardInput() {
+     HMODULE pad = GetModuleHandleA("libScePad.prx");
+     const auto publish = pad ? reinterpret_cast<PublishFn>(GetProcAddress(pad, "MCBKDgnIVB8")) : nullptr;
+@@ -266,6 +286,31 @@ void ForwardInput() {
+                 }
+                 previous = output;
+             }
++            // Telemetry describes the locally driven car (player 1 only). Explicit
++            // game trigger commands take priority, including an explicit release.
++            const unsigned strength = TriggerStrength();
++            const auto feedback = slot == 0 ? Input::TriggerFeedback::CurrentOutput(strength)
++                                           : Input::TriggerFeedback::Output{};
++            u8 left_rumble = feedback.left_rumble, right_rumble = feedback.right_rumble;
++            auto left = feedback.left, right = feedback.right;
++            const auto& saved = last_output[slot];
++            if (saved.triggerTouched) {
++                std::copy_n(saved.trigger[0].effect, 11, left.begin());
++                std::copy_n(saved.trigger[1].effect, 11, right.begin());
++                // An untouched side is a release rather than an all-zero vendor command.
++                if (!saved.trigger[0].valid) left = Input::TriggerFeedback::Vibration(0);
++                if (!saved.trigger[1].valid) right = Input::TriggerFeedback::Vibration(0);
++                left = Input::TriggerFeedback::ScaleEffect(left, strength);
++                right = Input::TriggerFeedback::ScaleEffect(right, strength);
++                left_rumble = Input::TriggerFeedback::Scale(saved.trigger[0].fallback, strength);
++                right_rumble = Input::TriggerFeedback::Scale(saved.trigger[1].fallback, strength);
++            }
++            const char* triggers = std::getenv("RYGT_ADAPTIVE_TRIGGERS");
++            if ((triggers && triggers[0] == '0') || Input::TriggerFeedback::stopping) {
++                left = right = Input::TriggerFeedback::Vibration(0);
++                left_rumble = right_rumble = 0;
++            }
++            controller.SetTriggerFeedback(left, right, left_rumble, right_rumble);
+             const auto state = controller.ReadState();
+             RytyPadInputState input{};
+             input.buttons = static_cast<std::uint32_t>(state.buttonsState);
+diff --git a/src/input/controller.cpp b/src/input/controller.cpp
+index a2c09d5..605d4cb 100644
+--- a/src/input/controller.cpp
++++ b/src/input/controller.cpp
+@@ -205,6 +205,9 @@ void GameController::SetTouchpadState(int touch_index, bool touch_down, float x,
+ void GameController::ConnectController(SDL_Gamepad* pad) {
+     std::lock_guard lock{m_state_mutex};
+     m_sdl_gamepad = pad;
++    m_trigger_initialized = false;
++    m_trigger_failed = false;
++    m_trigger_sent = 0;
+     if (override_colour) {
+         SetLightBarRGB({});
+     }
+@@ -222,8 +225,19 @@ void GameController::ConnectController(SDL_Gamepad* pad) {
+ 
+ void GameController::DisconnectController() {
+     std::lock_guard lock{m_state_mutex};
++    if (m_sdl_gamepad) {
++        if (SDL_GetGamepadType(m_sdl_gamepad) == SDL_GAMEPAD_TYPE_PS5) {
++            const auto stop = TriggerFeedback::DualSensePacket(TriggerFeedback::Vibration(0),
++                                                               TriggerFeedback::Vibration(0));
++            SDL_SendGamepadEffect(m_sdl_gamepad, stop.data(), static_cast<int>(stop.size()));
++        } else if (SDL_GetBooleanProperty(SDL_GetGamepadProperties(m_sdl_gamepad),
++                       SDL_PROP_GAMEPAD_CAP_TRIGGER_RUMBLE_BOOLEAN, false)) {
++            SDL_RumbleGamepadTriggers(m_sdl_gamepad, 0, 0, 0);
++        }
++    }
+     m_states_queue.Clear();
+     m_sdl_gamepad = nullptr;
++    m_trigger_initialized = false;
+ 
+     const u8 connected_count = m_state.connected_count;
+     m_state = {};
+@@ -317,6 +331,38 @@ bool GameController::SetVibration(u8 smallMotor, u8 largeMotor) {
+     return true;
+ }
+ 
++void GameController::SetTriggerFeedback(const TriggerFeedback::Effect& left,
++                                       const TriggerFeedback::Effect& right,
++                                       u8 leftRumble, u8 rightRumble) {
++    std::lock_guard lock{m_state_mutex};
++    if (!m_sdl_gamepad) return;
++    const bool dualsense = SDL_GetGamepadType(m_sdl_gamepad) == SDL_GAMEPAD_TYPE_PS5;
++    if (!dualsense && !SDL_GetBooleanProperty(SDL_GetGamepadProperties(m_sdl_gamepad),
++                           SDL_PROP_GAMEPAD_CAP_TRIGGER_RUMBLE_BOOLEAN, false)) return;
++    const auto packet = TriggerFeedback::DualSensePacket(left, right);
++    const u16 low = u16{leftRumble} * 257, high = u16{rightRumble} * 257;
++    const u64 now = SDL_GetTicks();
++    const bool stopping = TriggerFeedback::stopping.load();
++    // Failed output retries once per second, never once per 4 ms input tick.
++    if (!stopping && m_trigger_failed && now - m_trigger_sent < 1000) return;
++    const bool changed = !m_trigger_initialized || (dualsense ? packet != m_trigger_packet
++                                        : low != m_trigger_left || high != m_trigger_right);
++    const bool refresh = !dualsense && (low || high) && now - m_trigger_sent >= 250;
++    if (!changed && !refresh) return;
++    const bool sent = dualsense
++        ? SDL_SendGamepadEffect(m_sdl_gamepad, packet.data(), static_cast<int>(packet.size()))
++        : SDL_RumbleGamepadTriggers(m_sdl_gamepad, low, high, 500);
++    m_trigger_sent = now;
++    if (!sent && !m_trigger_failed) LOG_DEBUG(Input, "Trigger feedback unavailable: {}", SDL_GetError());
++    m_trigger_failed = !sent;
++    if (sent) {
++        m_trigger_packet = packet;
++        m_trigger_left = low;
++        m_trigger_right = high;
++        m_trigger_initialized = true;
++    }
++}
++
+ static bool is_first_check = true;
+ 
+ int (*g_preferred_controller_slot)(u16 vendor, u16 product, int nth) = nullptr;
+@@ -344,8 +390,8 @@ void GameControllers::TryOpenSDLControllers() {
+                 }
+             }
+             if (!still_connected) {
+-                SDL_CloseGamepad(pad);
+                 controllers[i]->DisconnectController();
++                SDL_CloseGamepad(pad);
+                 controllers[i]->user_id = -1;
+                 slot_taken[i] = false;
+             }
+diff --git a/src/input/controller.h b/src/input/controller.h
+index efe18de..226aedc 100644
+--- a/src/input/controller.h
++++ b/src/input/controller.h
+@@ -14,6 +14,7 @@
+ #include "common/ring_buffer_queue.h"
+ #include "core/libraries/pad/pad.h"
+ #include "core/libraries/system/userservice.h"
++#include "input/trigger_feedback.h"
+ 
+ namespace Input {
+ 
+@@ -104,6 +105,8 @@ public:
+     Colour GetLightBarRGB();
+     void PollLightColour();
+     bool SetVibration(u8 smallMotor, u8 largeMotor);
++    void SetTriggerFeedback(const TriggerFeedback::Effect& left,
++                            const TriggerFeedback::Effect& right, u8 leftRumble, u8 rightRumble);
+     void SetTouchpadState(int touchIndex, bool touchDown, float x, float y);
+     // IPC-injected pad state, merged into what the game reads for hold_frames presented frames:
+     // buttons are OR'd with real input, a stick axis away from centre or a trigger above the real
+@@ -137,6 +140,11 @@ private:
+     } m_injection;
+ 
+     std::mutex m_state_mutex;
++    std::array<u8, 47> m_trigger_packet{};
++    u16 m_trigger_left{}, m_trigger_right{};
++    u64 m_trigger_sent{};
++    bool m_trigger_initialized{};
++    bool m_trigger_failed{};
+     RingBufferQueue<State> m_states_queue;
+ };
+ 
+diff --git a/src/input/trigger_feedback.h b/src/input/trigger_feedback.h
+new file mode 100644
+index 0000000..cdad5f6
+--- /dev/null
++++ b/src/input/trigger_feedback.h
+@@ -0,0 +1,175 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++#pragma once
++#include <algorithm>
++#include <array>
++#include <atomic>
++#include <chrono>
++#include <cmath>
++#include <cstdint>
++#include <cstring>
++#include <mutex>
++
++namespace Input::TriggerFeedback {
++using Clock = std::chrono::steady_clock;
++struct Sample {
++    std::uint32_t packet{};
++    float speed{};
++    std::array<float, 4> omega{}, radius{};
++    std::uint16_t flags{};
++    std::uint8_t throttle{}, brake{};
++};
++template<class T> inline T Read(const std::uint8_t* data, unsigned offset) {
++    T value;
++    std::memcpy(&value, data + offset, sizeof(value));
++    return value;
++}
++// GT Sport v1.69's little-endian 0x128-byte Simulator Interface packet.
++inline bool Decode(const std::uint8_t* data, Sample& sample) {
++    if (Read<std::uint32_t>(data, 0) != 0x47375330) return false;
++    sample.packet = Read<std::uint32_t>(data, 0x70);
++    sample.speed = Read<float>(data, 0x4c);
++    sample.flags = Read<std::uint16_t>(data, 0x8e);
++    sample.throttle = data[0x91];
++    sample.brake = data[0x92];
++    if (!std::isfinite(sample.speed) || sample.speed < 0 || sample.speed > 200) return false;
++    for (unsigned i = 0; i < 4; ++i) {
++        sample.omega[i] = Read<float>(data, 0xa4 + 4*i);
++        sample.radius[i] = Read<float>(data, 0xb4 + 4*i);
++        if (!std::isfinite(sample.omega[i]) || std::abs(sample.omega[i]) > 20000 ||
++            !std::isfinite(sample.radius[i]) || sample.radius[i] < 0.05f || sample.radius[i] > 2)
++            return false;
++    }
++    return true;
++}
++struct Feedback {
++    std::uint8_t left{}, right{};
++};
++inline Feedback Calculate(const Sample& sample) {
++    // Never actuate in menus, pause/loading, or at near-zero speed.
++    if (!(sample.flags & 1) || (sample.flags & 6) || sample.speed < 3) return {};
++    float lock = 0, spin = 0;
++    for (unsigned i = 0; i < 4; ++i) {
++        const float ratio = std::abs(sample.omega[i]) * sample.radius[i] / sample.speed;
++        lock = std::max(lock, 1 - ratio);
++        spin = std::max(spin, ratio - 1);
++    }
++    // This is wheel-lock estimation, not an ABS-active flag. The dead zones avoid
++    // reacting to normal rolling-radius differences and small cornering differences.
++    const float braking = std::clamp((lock - 0.08f) / 0.20f, 0.0f, 1.0f);
++    const float traction = std::max(std::clamp((spin - 0.10f) / 0.30f, 0.0f, 1.0f),
++                                    (sample.flags & 0x800) ? 0.65f : 0.0f);
++    return {static_cast<std::uint8_t>(braking * sample.brake),
++            static_cast<std::uint8_t>(traction * sample.throttle)};
++}
++inline std::mutex sample_mutex;
++inline Sample latest_sample;
++inline Clock::time_point updated{};
++inline bool have_sample{};
++inline std::atomic<bool> stopping{};
++inline void Publish(const std::uint8_t* packet) {
++    Sample sample;
++    if (!Decode(packet, sample)) return;
++    std::lock_guard lock(sample_mutex);
++    if (!have_sample || sample.packet != latest_sample.packet) {
++        latest_sample = sample;
++        updated = Clock::now();
++        have_sample = true;
++    }
++}
++inline Feedback Current() {
++    std::lock_guard lock(sample_mutex);
++    if (stopping || !have_sample || Clock::now() - updated > std::chrono::milliseconds(250)) return {};
++    return Calculate(latest_sample);
++}
++using Effect = std::array<std::uint8_t, 11>;
++inline std::uint8_t Scale(std::uint8_t strength, unsigned percent) {
++    return static_cast<std::uint8_t>(std::min(255u, (strength * std::min(percent, 200u) + 50u) / 100u));
++}
++inline Effect ScaleEffect(Effect effect, unsigned percent) {
++    percent = std::min(percent, 200u);
++    if (percent == 100 || effect[0] == 5) return effect;
++    if (!percent) { effect = {}; effect[0] = 5; return effect; }
++    auto amplitude = [percent](unsigned strength) {
++        return std::min(8u, (strength * percent + 50u) / 100u);
++    };
++    if (effect[0] == 0x21 || effect[0] == 0x26) {
++        unsigned zones = effect[1] | (unsigned{effect[2]} << 8);
++        std::uint32_t packed = 0;
++        for (unsigned i = 0; i < 4; ++i) packed |= std::uint32_t{effect[3+i]} << (8*i);
++        std::uint32_t scaled = 0;
++        for (unsigned i = 0; i < 10; ++i) if (zones & (1u << i)) {
++            const unsigned strength = amplitude(((packed >> (3*i)) & 7u) + 1);
++            if (!strength) zones &= ~(1u << i);
++            else scaled |= (strength - 1) << (3*i);
++        }
++        if (!zones) { effect = {}; effect[0] = 5; return effect; }
++        effect[1] = zones & 255;
++        effect[2] = (zones >> 8) & 255;
++        for (unsigned i = 0; i < 4; ++i) effect[3+i] = (scaled >> (8*i)) & 255;
++    } else if (effect[0] == 0x25) {
++        const unsigned strength = amplitude((effect[3] & 7) + 1);
++        if (!strength) { effect = {}; effect[0] = 5; return effect; }
++        effect[3] = strength - 1;
++    }
++    return effect;
++}
++inline Effect Vibration(std::uint8_t strength) {
++    Effect effect{};
++    effect[0] = 0x05; // Release resistance/vibration, including on pause and stale data.
++    if (!strength) return effect;
++    effect[0] = 0x26;
++    effect[1] = 0xfe; // Zones 1-9; leave the start of the travel free.
++    effect[2] = 0x03;
++    const unsigned amplitude = (strength - 1) * 7 / 254;
++    std::uint32_t packed = 0;
++    for (unsigned zone = 1; zone < 10; ++zone) packed |= amplitude << (3*zone);
++    for (unsigned i = 0; i < 4; ++i) effect[3+i] = (packed >> (8*i)) & 255;
++    effect[9] = 25; // Native trigger vibration frequency, not a software rumble loop.
++    return effect;
++}
++inline std::array<std::uint8_t, 47> DualSensePacket(const Effect& left, const Effect& right) {
++    std::array<std::uint8_t, 47> packet{};
++    packet[0] = 0x0c; // Enable ONLY right/left trigger effects; preserve LEDs/body rumble.
++    std::copy(right.begin(), right.end(), packet.begin() + 10);
++    std::copy(left.begin(), left.end(), packet.begin() + 21);
++    return packet;
++}
++inline Effect PedalResistance(bool brake, unsigned percent) {
++    // Increasing force through the travel, with the initial zone free. The brake
++    // is firmer than the accelerator; percentages scale force, not zone positions.
++    constexpr std::array<unsigned, 10> brake_force{0, 1, 1, 2, 2, 3, 4, 5, 6, 7};
++    constexpr std::array<unsigned, 10> throttle_force{0, 1, 1, 1, 1, 2, 2, 2, 3, 3};
++    Effect effect{};
++    effect[0] = 0x21;
++    unsigned zones = 0;
++    std::uint32_t packed = 0;
++    for (unsigned i = 0; i < 10; ++i) {
++        const unsigned force = std::min(8u, ((brake ? brake_force[i] : throttle_force[i]) *
++                                                  std::min(percent, 200u) + 50) / 100);
++        if (!force) continue;
++        zones |= 1u << i;
++        packed |= (force - 1) << (3*i);
++    }
++    if (!zones) return Vibration(0);
++    effect[1] = zones & 255;
++    effect[2] = (zones >> 8) & 255;
++    for (unsigned i = 0; i < 4; ++i) effect[3+i] = (packed >> (8*i)) & 255;
++    return effect;
++}
++struct Output {
++    Effect left = Vibration(0), right = Vibration(0);
++    std::uint8_t left_rumble{}, right_rumble{};
++};
++inline Output CurrentOutput(unsigned percent) {
++    std::lock_guard lock(sample_mutex);
++    if (stopping || !have_sample || Clock::now() - updated > std::chrono::milliseconds(250) ||
++        !(latest_sample.flags & 1) || (latest_sample.flags & 6)) return {};
++    const auto feedback = Calculate(latest_sample);
++    Output output;
++    output.left_rumble = Scale(feedback.left, percent);
++    output.right_rumble = Scale(feedback.right, percent);
++    output.left = output.left_rumble ? Vibration(output.left_rumble) : PedalResistance(true, percent);
++    output.right = output.right_rumble ? Vibration(output.right_rumble) : PedalResistance(false, percent);
++    return output;
++}
++} // namespace Input::TriggerFeedback
+diff --git a/src/input/trigger_feedback_tests.cpp b/src/input/trigger_feedback_tests.cpp
+new file mode 100644
+index 0000000..9d5c639
+--- /dev/null
++++ b/src/input/trigger_feedback_tests.cpp
+@@ -0,0 +1,80 @@
++#include "input/trigger_feedback.h"
++#include <iostream>
++#include <stdexcept>
++
++using namespace Input::TriggerFeedback;
++static void Check(bool value, const char* message) {
++    if (!value) throw std::runtime_error(message);
++}
++int main() {
++    Sample sample;
++    sample.speed = 30;
++    sample.flags = 1;
++    sample.radius.fill(0.3f);
++    sample.omega.fill(-100);
++    sample.brake = sample.throttle = 255;
++    Check(Calculate(sample).left == 0 && Calculate(sample).right == 0, "normal rolling is silent");
++    sample.omega[0] = -50;
++    Check(Calculate(sample).left == 255 && Calculate(sample).right == 0, "wheel lock affects brake only");
++    sample.omega.fill(-100);
++    sample.omega[2] = -150;
++    Check(Calculate(sample).right == 255 && Calculate(sample).left == 0, "wheelspin affects accelerator only");
++    sample.omega.fill(-100);
++    sample.flags |= 0x800;
++    Check(Calculate(sample).right > 0, "TCS activation affects accelerator");
++    sample.throttle = 0;
++    Check(Calculate(sample).right == 0, "released accelerator silent");
++    for (unsigned flags : {0u, 3u, 5u}) {
++        sample.flags = flags;
++        Check(Calculate(sample).left == 0 && Calculate(sample).right == 0, "menu/pause/loading silent");
++    }
++    Check(Current().left == 0 && Current().right == 0, "no telemetry silent");
++    sample.flags = 1;
++    sample.speed = 0;
++    Check(Calculate(sample).left == 0 && Calculate(sample).right == 0, "standstill silent");
++    auto left = Vibration(120), right = Vibration(240);
++    auto packet = DualSensePacket(left, right);
++    Check(packet.size() == 47 && packet[0] == 0x0c && packet[1] == 0 && packet[38] == 0,
++          "trigger-only SDL report preserves other effects");
++    Check(std::equal(left.begin(), left.end(), packet.begin()+21) &&
++          std::equal(right.begin(), right.end(), packet.begin()+10), "left/right report order");
++    Check(Vibration(0)[0] == 5 && left[0] == 0x26 && left[9] == 25, "vibration and release encoding");
++    Check(Scale(200, 0) == 0 && Scale(200, 50) == 100 && Scale(200, 100) == 200 &&
++          Scale(200, 200) == 255, "strength gain and saturation");
++    Check(ScaleEffect(left, 0)[0] == 5 && ScaleEffect(left, 100) == left,
++          "explicit effect disabled or preserved");
++    Check(ScaleEffect(Vibration(255), 200) == Vibration(255), "maximum effect saturates");
++    Check(PedalResistance(true, 100)[0] == 0x21 && PedalResistance(false, 100)[0] == 0x21 &&
++          PedalResistance(true, 0)[0] == 5, "progressive resistance and disable");
++    Check(PedalResistance(true, 100) != PedalResistance(false, 100), "brake and accelerator have distinct curves");
++    std::array<std::uint8_t, 0x128> raw{};
++    Sample decoded;
++    Check(!Decode(raw.data(), decoded), "invalid packet rejected");
++    auto put = [&](unsigned offset, auto value) { std::memcpy(raw.data()+offset,&value,sizeof(value)); };
++    put(0, std::uint32_t{0x47375330});
++    put(0x4c, 30.0f);
++    put(0x70, std::uint32_t{1});
++    put(0x8e, std::uint16_t{1});
++    raw[0x92] = 255;
++    for (unsigned i=0;i<4;++i) { put(0xa4+4*i,-50.0f); put(0xb4+4*i,0.3f); }
++    Check(Decode(raw.data(), decoded) && decoded.brake == 255, "documented packet offsets");
++    Publish(raw.data());
++    Check(Current().left == 255, "live data published");
++    Check(CurrentOutput(100).left[0] == 0x26 && CurrentOutput(100).right[0] == 0x21,
++          "braking vibration overrides left resistance only");
++    Check(CurrentOutput(0).left[0] == 5 && CurrentOutput(0).right[0] == 5, "zero slider releases both pedals");
++    { std::lock_guard lock(sample_mutex); updated = Clock::now()-std::chrono::seconds(1); }
++    Publish(raw.data());
++    Check(Current().left == 0, "repeated packet cannot revive stale effects");
++    Check(CurrentOutput(100).left[0] == 5 && CurrentOutput(100).right[0] == 5, "stale resistance released");
++    put(0x70, std::uint32_t{2});
++    raw[0x92] = 0;
++    Publish(raw.data());
++    Check(CurrentOutput(100).left[0] == 0x21, "resistance restored after event");
++    stopping = true;
++    Check(CurrentOutput(100).left[0] == 5, "normal exit releases resistance");
++    stopping = false;
++    put(0xb4, 0.0f);
++    Check(!Decode(raw.data(), decoded), "invalid radii rejected");
++    std::cout << "PASS: telemetry decoding, lock/spin/TCS, gating, expiry, DualSense report\n";
++}

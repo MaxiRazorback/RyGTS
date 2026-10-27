@@ -97,7 +97,7 @@ WindowsEntryStub WindowsEntryStubBuilder::Build(const std::uint32_t dataRva, con
     const auto newline = addString("\n");
     const auto searched = addString("Searched libraries:\n");
     const auto indent = addString("  ");
-    const auto enteringElf = addString("Transferring control to ELF entry point\n");
+
     std::vector<std::uint32_t> resolvedPaths;
     for (std::size_t index = 0; index < libraries.size(); ++index)
         resolvedPaths.push_back(reserve(PathCapacity));
@@ -144,20 +144,19 @@ WindowsEntryStub WindowsEntryStubBuilder::Build(const std::uint32_t dataRva, con
         code.Emit({0x89, 0x44, 0x24, 0x3c, 0xb9});
         code.U32(isError ? 0xfffffff4u : 0xfffffff5u);
         call("GetStdHandle");
-        requireDiagnosticSuccess();
+        // A missing or closed output handle skips the message instead of stopping the program:
+        // a Windows (GUI) GTSport.exe has none unless libc.prx redirected it, and a guest close
+        // of descriptor 1 resets it (Lance's GTSport.exe raised 0xc0000001 here at every start).
+        code.Emit({0x48, 0x85, 0xc0});
+        const auto noHandle = code.Branch({0x0f, 0x84});
         code.Emit({0x48, 0x83, 0xf8, 0xff});
-        const auto validHandle = code.Branch({0x0f, 0x85});
-        raise(0xc0000001u);
-        code.PatchBranch(validHandle, code.GetRva());
+        const auto invalidHandle = code.Branch({0x0f, 0x84});
         code.Emit({0x48, 0x89, 0xc1});
         code.Rip({0x48, 0x8d, 0x15}, stringRva);
         code.Emit({0x44, 0x8b, 0x44, 0x24, 0x3c, 0x4c, 0x8d, 0x4c, 0x24, 0x38, 0x48, 0xc7, 0x44, 0x24, 0x20, 0, 0, 0, 0});
         call("WriteFile");
-        requireDiagnosticSuccess();
-        code.Emit({0x8b, 0x44, 0x24, 0x38, 0x3b, 0x44, 0x24, 0x3c});
-        const auto complete = code.Branch({0x0f, 0x84});
-        raise(0xc0000001u);
-        code.PatchBranch(complete, code.GetRva());
+        code.PatchBranch(noHandle, code.GetRva());
+        code.PatchBranch(invalidHandle, code.GetRva());
     };
 
     const auto writeLastError = [&] {
@@ -336,7 +335,7 @@ WindowsEntryStub WindowsEntryStubBuilder::Build(const std::uint32_t dataRva, con
     }
 
     guestStartup.Initialize(code, guestModules, handles);
-    writeString(enteringElf);
+    // Normal startup stays silent; loader failures still report to stderr.
     code.Rip({0x48, 0x8d, 0x0d}, shellLibrary);
     code.Emit({0x31, 0xd2, 0x41, 0xb8, 0, 8, 0, 0});
     call("LoadLibraryExA");

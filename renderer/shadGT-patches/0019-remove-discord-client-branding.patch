@@ -1,0 +1,13 @@
+diff --git a/src/common/discord_rpc_handler.cpp b/src/common/discord_rpc_handler.cpp
+index 56dd837..79eedd0 100644
+--- a/src/common/discord_rpc_handler.cpp
++++ b/src/common/discord_rpc_handler.cpp
+@@ -6,7 +6,7 @@
+ namespace DiscordRPCHandler {
+ 
+ #ifdef RYTY_GPU
+-constexpr const char* RunningOn = "Running on ryGT"; // the Ryty build (RyGT)
++constexpr const char* RunningOn = nullptr; // Omit the client branding from RyGT presence.
+ #else
+ constexpr const char* RunningOn = "Running on shadGT";
+ #endif

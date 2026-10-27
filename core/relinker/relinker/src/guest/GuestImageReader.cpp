@@ -142,7 +142,14 @@ GuestImage GuestImageReader::Read(const std::filesystem::path& path, std::vector
         const bool sectionPlaceholder = (info & 15) == 3 && (info >> 4) == 0 && section == 0 && value == 0 && size == 0 && name.empty();
         if (offset != 0 && !sectionPlaceholder && ((info >> 4) > 2 || (visibility & ~3u) != 0 || ((info & 15) != 0 && (info & 15) != 1 && (info & 15) != 2 && (info & 15) != 6))) fail("Unsupported symbol attributes: " + name);
         if (section != 0 && (info >> 4) != 0 && visibility != 1 && visibility != 2) {
-            if (name.empty() || !exports.insert(name).second) fail("Duplicate or empty export after stripping #: " + name);
+            if (name.empty()) fail("Empty export after stripping #");
+            if (!exports.insert(name).second) {
+                // Some system modules (libSceJpegDec) export a function under two libraries
+                // (libSceJpegDec and libSceJpegDec_jvm); the NID is the same, so the first export
+                // serves both and the repeat becomes a local symbol.
+                info = static_cast<std::uint8_t>(info & 15);
+                image.Dynamic.DynSymData[offset + 4] = info;
+            }
         }
         if ((info & 15) == 6 && section != 0 && (tls == nullptr || value > tls->MemorySize || size > tls->MemorySize - value)) fail("TLS symbol exceeds TLS segment: " + name);
         if (section != 0 && (info & 15) != 6) {

@@ -1,0 +1,63 @@
+From 2c057d4632b79cc4b307654e711ca12d2cea1568 Mon Sep 17 00:00:00 2001
+From: xacidr4inx <xacidr4inx@users.noreply.github.com>
+Date: Sun, 18 Oct 2026 19:23:52 -0400
+Subject: [PATCH] Fix shared stub dependencies when building non-renderer host
+ libraries
+
+---
+ ryty_gpu/RytyGpu.cmake           | 5 +++++
+ ryty_gpu/ryty_hle_precompile.cpp | 7 +++++++
+ ryty_gpu/ryty_stubs.cpp          | 3 +++
+ 3 files changed, 15 insertions(+)
+ create mode 100644 ryty_gpu/ryty_hle_precompile.cpp
+
+diff --git a/ryty_gpu/RytyGpu.cmake b/ryty_gpu/RytyGpu.cmake
+index 799fa01..088b437 100644
+--- a/ryty_gpu/RytyGpu.cmake
++++ b/ryty_gpu/RytyGpu.cmake
+@@ -215,3 +215,8 @@ ryty_add_library(ryty_np libSceNpAuth
+ target_compile_definitions(ryty_np PRIVATE RYTY_GUEST_PTHREADS)
+ target_link_libraries(ryty_np PRIVATE libprotobuf Cpp_Httplib minimp3 miniupnpc::miniupnpc ws2_32 iphlpapi)
+ target_include_directories(ryty_np PRIVATE "${SHADNET_PROTO_OUT}")
++
++# Non-renderer libraries do not link the Vulkan shader compiler.
++foreach(target IN ITEMS ryty_ngs2 ryty_ajm ryty_audio3d ryty_zlib ryty_discmap ryty_screenshot ryty_np)
++    target_sources(${target} PRIVATE ryty_gpu/ryty_hle_precompile.cpp)
++endforeach()
+diff --git a/ryty_gpu/ryty_hle_precompile.cpp b/ryty_gpu/ryty_hle_precompile.cpp
+new file mode 100644
+index 0000000..8df29c2
+--- /dev/null
++++ b/ryty_gpu/ryty_hle_precompile.cpp
+@@ -0,0 +1,7 @@
++// Non-renderer host libraries share system-service stubs but do not own shader
++// compilation. Only libSceVideoOut implements and holds the game's precompile.
++namespace Vulkan {
++bool PrecompileHoldsGame() {
++    return false;
++}
++}
+diff --git a/ryty_gpu/ryty_stubs.cpp b/ryty_gpu/ryty_stubs.cpp
+index 496ab68..76fef8b 100644
+--- a/ryty_gpu/ryty_stubs.cpp
++++ b/ryty_gpu/ryty_stubs.cpp
+@@ -168,6 +168,8 @@ Common::NativeClock* GetClock() {
+ }
+ } // namespace Dev
+ 
++#ifndef RYTY_GUEST_PTHREADS
++// The NP guest-pthread bridge provides its own firmware query.
+ // ryGT: for the on-screen keyboard dialog (its panel size depends on the firmware version).
+ s32 PS4_SYSV_ABI sceKernelGetSystemSwVersion(SwVersionStruct* ret) {
+     if (ret != nullptr) {
+@@ -179,6 +181,7 @@ s32 PS4_SYSV_ABI sceKernelGetSystemSwVersion(SwVersionStruct* ret) {
+     return 0;
+ }
+ 
++#endif
+ } // namespace Libraries::Kernel
+ 
+ namespace Libraries::SystemService {
+-- 
+2.55.0.windows.5
+

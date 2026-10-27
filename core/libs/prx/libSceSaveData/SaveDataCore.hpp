@@ -18,6 +18,8 @@
 #include <set>
 #include <string>
 #include <unordered_map>
+#include <memory>
+#include <thread>
 #include <vector>
 
 #include "SceTypes.hpp"
@@ -953,7 +955,10 @@ int setup_memory_internal(const SaveDataMemorySetup2* setup, SaveDataMemorySetup
     std::size_t existed = 0;
     std::error_code error;
     const std::filesystem::path blob = memory_directory(setup->user_id, setup->slot_id) / "memory.dat";
-    if (std::filesystem::is_regular_file(blob, error) && !error) {
+    const bool blob_found = std::filesystem::is_regular_file(blob, error) && !error;
+    std::fprintf(stderr, "[SAVEDATA:core] memory save %s: %s\n", blob.string().c_str(),
+                 blob_found ? "found" : error ? error.message().c_str() : "not found");
+    if (blob_found) {
         const std::size_t stored = static_cast<std::size_t>(std::filesystem::file_size(blob, error));
         if (error || stored > SD_MEMORY_MAX_SIZE) {
             return SD_ERROR_BROKEN;
@@ -1020,6 +1025,44 @@ int get_memory_internal(SaveDataMemoryGet2* get_param) {
     return SD_OK;
 }
 
+// Writes memory saves in the order they were made; a newer copy replaces one not yet written.
+void persist_memory_async(const std::filesystem::path& directory, const MemorySlot& slot) {
+    struct Pending {
+        std::filesystem::path directory;
+        std::vector<char> data;
+        SaveDataParam param;
+    };
+    static std::mutex mutex;
+    static std::map<std::string, std::shared_ptr<Pending>> pending;
+    static bool writer_running = false;
+    auto copy = std::make_shared<Pending>(Pending{directory, slot.data, slot.param});
+    std::lock_guard lock(mutex);
+    pending[directory.string()] = std::move(copy);
+    if (writer_running) {
+        return;
+    }
+    writer_running = true;
+    std::thread([] {
+        for (;;) {
+            std::shared_ptr<Pending> next;
+            {
+                std::lock_guard lock(mutex);
+                if (pending.empty()) {
+                    writer_running = false;
+                    return;
+                }
+                next = pending.begin()->second;
+                pending.erase(pending.begin());
+            }
+            if (!write_blob(next->directory / "memory.dat", next->data.data(), next->data.size()) ||
+                !write_blob(save_param_path(next->directory), &next->param, sizeof(next->param))) {
+                std::fprintf(stderr, "[SAVEDATA:core] writing %s failed\n",
+                             (next->directory / "memory.dat").string().c_str());
+            }
+        }
+    }).detach();
+}
+
 int set_memory_internal(const SaveDataMemorySet2* set_param) {
     State& st = state();
     if (set_param == nullptr || set_param->slot_id >= SD_MEMORY_SLOTS ||
@@ -1060,6 +1103,10 @@ int set_memory_internal(const SaveDataMemorySet2* set_param) {
     updated.param.mtime = static_cast<std::int64_t>(std::time(nullptr));
     updated.dirty = true;
     it->second = std::move(updated);
+    // On a PS4 a memory save's set reaches storage by itself; GT Sport never calls the sync
+    // (or a commit), so nothing it saved survived a restart. A copy is written on a background
+    // thread (32 MB: writing it here held the game's thread long enough to change what it did).
+    persist_memory_async(memory_directory(set_param->user_id, set_param->slot_id), it->second);
     return SD_OK;
 }
 
