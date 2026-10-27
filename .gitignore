@@ -56,3 +56,6 @@ Thumbs.db
 /converter-tests.xml
 /dist/
 /.ci-runtime-base.zip
+
+# CI bridge regression tests are source files.
+!/ci/tests/

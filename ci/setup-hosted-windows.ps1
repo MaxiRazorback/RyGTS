@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
-# GitLab-hosted Windows VMs are disposable. Keep tool paths short.
+# Hosted Windows VMs are disposable. Keep tool paths short.
 $tools = 'C:/ci-tools'
 New-Item -ItemType Directory -Force $tools | Out-Null
 $archive = "$tools/llvm-23.1.3.tar.xz"
@@ -15,9 +15,11 @@ if (!(Test-Path $sevenZip)) { throw '7-Zip is required on the hosted Windows ima
 # 7-Zip handles XZ itself; Windows tar can depend on an absent external xz.exe.
 & $sevenZip x $archive "-o$tools" -y -bso0 -bsp0
 if ($LASTEXITCODE) { throw 'LLVM XZ decompression failed' }
+Remove-Item -LiteralPath $archive
 $tarArchive = "$tools/llvm-23.1.3.tar"
 & $sevenZip x $tarArchive "-o$tools" -y -bso0 -bsp0
 if ($LASTEXITCODE) { throw 'LLVM extraction failed' }
+Remove-Item -LiteralPath $tarArchive
 $env:LLVM_ROOT = "$tools/clang+llvm-23.1.3-x86_64-pc-windows-msvc"
 if (!(Test-Path "$env:LLVM_ROOT/bin/clang-cl.exe")) { throw 'Extracted LLVM compiler is missing' }
 & python -m pip install --disable-pip-version-check cmake==3.31.6 ninja==1.11.1.4

@@ -19,6 +19,32 @@ C++ tools. The renderer uses two compiler workers and has a three-hour job
 limit. Hosted Windows provisioning can take several minutes. Availability,
 compute quota and the project's maximum job timeout still apply.
 
+## GitHub Windows workers, GitLab pipelines
+
+`windows-on-github` is a GitLab job that dispatches the workflow pinned in
+`ci/github-actions.json`, waits for its exact request ID, and retrieves the Windows
+artifacts. GitHub builds the exact GitLab commit; it never needs a GitLab secret.
+GitLab verifies the workflow revision, artifact source revision and checksums.
+The existing Linux converter tests and final packaging remain on GitLab. ZIPs and
+checksums remain available in the GitLab package job's artifacts.
+
+Set a **masked** GitLab variable `GITHUB_ACTIONS_TOKEN`, with variable expansion
+disabled. Use a fine-grained GitHub token restricted to `xacidr4inx/RyGT-ci` and
+repository **Actions: read and write**. Do not use an all-repositories token.
+If the variable is protected, it is available only to protected GitLab refs.
+Rotate it before its selected expiration date.
+
+When this token is unavailable, CI retains the existing GitLab Windows jobs.
+Set `WINDOWS_CI_PROVIDER=gitlab` to select those jobs explicitly. The GitHub route
+is selected only when the provider is `github` and the token is available. A
+failed GitHub run fails its GitLab bridge job and prevents package publication.
+The bridge logs the GitHub run URL; cancellation after run discovery cancels the
+remote build. GitHub artifacts expire after 7 days; the fetched GitLab build
+artifacts retain their normal 14-day lifetime and packages retain 30 days.
+
+To update the runner workflow, review its new commit and update `workflow_commit`
+in `ci/github-actions.json`. Unexpected workflow revisions fail closed.
+
 ## Complete distribution package
 
 Download `dist/RyGT-development-<commit>.zip` from the `package` job's artifacts.
