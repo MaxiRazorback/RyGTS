@@ -90,6 +90,9 @@ def package():
     shutil.copy2(Path(__file__).resolve().parent.parent / 'LICENSE', stage / 'LICENSE')
     shutil.copy2(launcher, stage / 'RyGT.exe')
     shutil.copy2(renderer, stage / 'libs/libSceVideoOut.prx')
+    (stage / 'tools/amd').mkdir(parents=True, exist_ok=True)
+    shutil.copy2(Path(__file__).resolve().parent.parent / 'tools/amd/Add-To-AMD-Software.ps1',
+                 stage / 'tools/amd/Add-To-AMD-Software.ps1')
     required = ['converter/ryty.exe', 'tools/adcpatch/adcpatch.exe',
                 'libs/libSceBluetoothHid.prx', 'amd_fidelityfx_vk.dll',
                 'amd_fidelityfx_vk-LICENSE.txt', 'launcher/background.png',
@@ -110,7 +113,7 @@ def package():
     provenance = {
         'commit': commit, 'pipeline': os.environ.get('CI_PIPELINE_URL'),
         'runtime_base_url': BASE_URL, 'runtime_base_sha256': BASE_SHA,
-        'rebuilt': ['RyGT.exe', 'libs/libSceVideoOut.prx'],
+        'rebuilt': ['RyGT.exe', 'libs/libSceVideoOut.prx', 'tools/amd/Add-To-AMD-Software.ps1'],
         'retained': 'All other redistributable runtime files from pinned prerelease',
         'renderer_source': Path('artifacts/renderer/CI-SOURCE.txt').read_text(encoding='utf-8-sig'),
     }
