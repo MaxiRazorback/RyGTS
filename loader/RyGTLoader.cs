@@ -818,6 +818,74 @@ namespace RyGT
             if (ReadSubsystem(exe) != GuiSubsystem) WriteSubsystem(exe, GuiSubsystem);
         }
 
+        public static void ApplyVersionInfo(string exe)
+        {
+            if (Wine.Detected || HasResource(exe, RtVersion)) return;
+            byte[] data = VersionInfo(new[] {
+                new[] { "CompanyName", "RyGT" },
+                new[] { "FileDescription", "Gran Turismo Sport" },
+                new[] { "FileVersion", "1.69" },
+                new[] { "InternalName", "GTSport" },
+                new[] { "OriginalFilename", "GTSport.exe" },
+                new[] { "ProductName", "Gran Turismo Sport" },
+                new[] { "ProductVersion", "1.69" },
+            });
+            IntPtr update = BeginUpdateResource(exe, false);
+            if (update == IntPtr.Zero) throw new Exception("Could not open " + exe + " (error " + Marshal.GetLastWin32Error() + ").");
+            bool ok = UpdateResource(update, (IntPtr)RtVersion, (IntPtr)1, 0x0409, data, (uint)data.Length);
+            if (!EndUpdateResource(update, !ok) || !ok)
+                throw new Exception("Could not write the version information into " + exe + " (error " + Marshal.GetLastWin32Error() + ").");
+        }
+
+        const int RtVersion = 16;
+
+        static bool HasResource(string exe, int type)
+        {
+            IntPtr module = LoadLibraryEx(exe, IntPtr.Zero, 0x2 | 0x20);
+            if (module == IntPtr.Zero) return false;
+            try { return FindResource(module, (IntPtr)1, (IntPtr)type) != IntPtr.Zero; }
+            finally { FreeLibrary(module); }
+        }
+
+        static byte[] VersionInfo(string[][] strings)
+        {
+            var fixedInfo = new MemoryStream();
+            var w = new BinaryWriter(fixedInfo);
+            w.Write(0xFEEF04BDu); w.Write(0x00010000u);
+            w.Write(0x00010045u); w.Write(0u);
+            w.Write(0x00010045u); w.Write(0u);
+            w.Write(0x3Fu); w.Write(0u); w.Write(0x40004u);
+            w.Write(1u); w.Write(0u); w.Write(0u); w.Write(0u);
+            var table = new List<byte[]>();
+            foreach (var s in strings)
+                table.Add(Block(s[0], Encoding.Unicode.GetBytes(s[1] + "\0"), (s[1].Length + 1), 1, null));
+            byte[] stringTable = Block("040904b0", null, 0, 1, table);
+            byte[] stringFileInfo = Block("StringFileInfo", null, 0, 1, new List<byte[]> { stringTable });
+            byte[] translation = Block("Translation", new byte[] { 0x09, 0x04, 0xb0, 0x04 }, 4, 0, null);
+            byte[] varFileInfo = Block("VarFileInfo", null, 0, 1, new List<byte[]> { translation });
+            return Block("VS_VERSION_INFO", fixedInfo.ToArray(), 52, 0,
+                         new List<byte[]> { stringFileInfo, varFileInfo });
+        }
+
+        static byte[] Block(string key, byte[] value, int valueLength, ushort type, List<byte[]> children)
+        {
+            var block = new MemoryStream();
+            var w = new BinaryWriter(block);
+            w.Write((ushort)0); w.Write((ushort)valueLength); w.Write(type);
+            w.Write(Encoding.Unicode.GetBytes(key + "\0"));
+            while (block.Length % 4 != 0) w.Write((byte)0);
+            if (value != null) w.Write(value);
+            if (children != null)
+                foreach (var child in children)
+                {
+                    while (block.Length % 4 != 0) w.Write((byte)0);
+                    w.Write(child);
+                }
+            byte[] bytes = block.ToArray();
+            BitConverter.GetBytes((ushort)bytes.Length).CopyTo(bytes, 0);
+            return bytes;
+        }
+
         // The subsystem field of the PE optional header: PE header offset at 0x3c, then the "PE\0\0"
         // signature (4 bytes), the file header (20 bytes) and 68 bytes into the optional header.
         static long SubsystemOffset(BinaryReader reader)
@@ -893,6 +961,44 @@ namespace RyGT
                 if (!EndUpdateResource(update, !ok) && ok)
                     throw new Exception("Could not write the icon into " + exe + " (error " + Marshal.GetLastWin32Error() + ").");
             }
+        }
+    }
+
+    static class AmdSoftware
+    {
+        public static void EnsureGameEntry(string root, string exe)
+        {
+            try
+            {
+                if (Wine.Detected || Environment.GetEnvironmentVariable("RYGT_AMD_SOFTWARE") == "0") return;
+                string list = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                                           "AMD", "CN", "gmdb.blb");
+                string script = Path.Combine(root, "tools", "amd", "Add-To-AMD-Software.ps1");
+                string marker = Path.Combine(root, "user", "amd-software-entry.txt");
+                if (!File.Exists(list) || !File.Exists(script) || !File.Exists(exe)) return;
+                if (File.Exists(marker) && File.ReadAllText(marker).Trim() == exe) return;
+                string escaped = exe.Replace("\\", "\\\\");
+                if (File.ReadAllText(list).IndexOf(escaped, StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    File.WriteAllText(marker, exe);
+                    return;
+                }
+                var start = new ProcessStartInfo("powershell.exe",
+                    "-NoProfile -ExecutionPolicy Bypass -File \"" + script + "\" -GameExe \"" + exe + "\"")
+                {
+                    UseShellExecute = false, CreateNoWindow = true,
+                    RedirectStandardOutput = true, RedirectStandardError = true,
+                };
+                using (var process = Process.Start(start))
+                {
+                    string output = process.StandardOutput.ReadToEnd() + process.StandardError.ReadToEnd();
+                    if (!process.WaitForExit(30000)) return;
+                    if (process.ExitCode == 0) File.WriteAllText(marker, exe);
+                    File.AppendAllText(Path.Combine(root, "logs", "setup.log"),
+                                       "AMD Software game list: " + output.Trim() + Environment.NewLine);
+                }
+            }
+            catch { }
         }
     }
 
@@ -2434,6 +2540,7 @@ namespace RyGT
                 Path.Combine(work, "port-report.json") + "\" \"" + Path.Combine(work, "eboot.elf") + "\" \"" + stagedExe + "\"", work);
             if (code != 0 || !File.Exists(stagedExe)) throw new Exception("The converter failed (exit code " + code + ").");
             GameExe.Prepare(stagedExe);
+            GameExe.ApplyVersionInfo(stagedExe);
             // Keep the previous executable until conversion and preparation have both succeeded.
             Directory.CreateDirectory(Path.Combine(root, "app0", "sce_module"));
             foreach (string module in Directory.GetFiles(stagedModules))
@@ -2974,6 +3081,7 @@ namespace RyGT
             string exe = Path.Combine(root, "GTSport.exe");
             // Folders set up by an earlier RyGT.exe get the icon and the Windows subsystem now.
             try { if (!GameExe.IsPrepared(exe)) GameExe.Prepare(exe); } catch { }
+            ThreadPool.QueueUserWorkItem(delegate { AmdSoftware.EnsureGameEntry(root, exe); });
             ThreadPool.QueueUserWorkItem(delegate
             {
                 bool recoveredOnce = false;
