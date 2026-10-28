@@ -24,11 +24,11 @@ namespace RyGT
                 foreach (string child in Directory.GetFileSystemEntries(path)) CheckTree(child);
         }
 
-        public static bool Ensure(string folder, string game, string renderer, Action<string> log)
+        public static bool Ensure(string folder, string game, string renderer, Action<string> log, string adapterIdentity = "unspecified")
         {
             // Hash before deleting anything: missing/unreadable binaries abort the launch.
-            string identity = "RyGT shader identity 1\n" + GameBuildIntegrity.Hash(game) + "\n" +
-                              GameBuildIntegrity.Hash(renderer) + "\n";
+            string identity = "RyGT shader identity 2\n" + GameBuildIntegrity.Hash(game) + "\n" +
+                              GameBuildIntegrity.Hash(renderer) + "\n" + adapterIdentity + "\n";
             Directory.CreateDirectory(folder);
             if ((File.GetAttributes(folder) & FileAttributes.ReparsePoint) != 0)
                 throw new IOException("Shader identity requires the portable cache directory.");
@@ -55,7 +55,7 @@ namespace RyGT
                 File.WriteAllText(temporary, identity);
                 if (File.Exists(stamp)) File.Replace(temporary, stamp, null);
                 else File.Move(temporary, stamp);
-                log("Game/renderer shader-cache identity changed; incompatible shaders removed for recompilation.");
+                log("Game/renderer/GPU shader-cache identity changed; incompatible shaders removed for recompilation.");
             }
             return changed;
         }

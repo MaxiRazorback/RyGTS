@@ -2562,7 +2562,13 @@ namespace RyGT
         {
             if (Process.GetProcessesByName("GTSport").Length != 0)
                 throw new IOException("Close the game before checking or updating its shader cache.");
-            ShaderCacheIdentity.Ensure(ShaderFolder, Exe, Path.Combine(root, "libs", "libSceVideoOut.prx"), Log);
+            // Translated SPIR-V contains device-specific extensions and lowering choices.
+            // In particular, AMD compute binaries cannot be reused on NVIDIA.
+            string adapter = ReadStringSetting("Vulkan", "device_uuid", "");
+            if (adapter.Length == 0)
+                adapter = "automatic:" + string.Join(",", VulkanDevices.Enumerate().Select(d => d.Uuid).ToArray());
+            ShaderCacheIdentity.Ensure(ShaderFolder, Exe, Path.Combine(root, "libs", "libSceVideoOut.prx"),
+                                      Log, adapter.ToLowerInvariant());
         }
 
         bool ShadersOutdated()

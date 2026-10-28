@@ -13,6 +13,11 @@ Directory.CreateDirectory(shader); File.WriteAllText(Path.Combine(shader,"valid.
 File.WriteAllText(game,"b"); Assert(ShaderCacheIdentity.Ensure(cache,game,renderer,Console.WriteLine)); Assert(!Directory.Exists(shader));
 Directory.CreateDirectory(shader); File.WriteAllText(renderer,"r2"); Assert(ShaderCacheIdentity.Ensure(cache,game,renderer,Console.WriteLine)); Assert(!Directory.Exists(shader));
 string old=shader+".outdated"; Directory.CreateDirectory(old); Assert(!ShaderCacheIdentity.Ensure(cache,game,renderer,Console.WriteLine)); Assert(!Directory.Exists(old));
+Assert(ShaderCacheIdentity.Ensure(cache,game,renderer,Console.WriteLine,"amd-uuid"));
+Directory.CreateDirectory(shader); File.WriteAllText(Path.Combine(shader,"amd.spv"),"AMD-only instructions");
+Assert(!ShaderCacheIdentity.Ensure(cache,game,renderer,Console.WriteLine,"amd-uuid")); Assert(Directory.Exists(shader));
+Assert(ShaderCacheIdentity.Ensure(cache,game,renderer,Console.WriteLine,"nvidia-uuid")); Assert(!Directory.Exists(shader));
+Assert(!ShaderCacheIdentity.Ensure(cache,game,renderer,Console.WriteLine,"nvidia-uuid"));
 Directory.CreateDirectory(shader); File.Delete(renderer); bool failed=false; try { ShaderCacheIdentity.Ensure(cache,game,renderer,Console.WriteLine); } catch(FileNotFoundException) { failed=true; } Assert(failed&&Directory.Exists(shader));
 Console.WriteLine("PASS: missing identity, matching identity, game change, renderer change, stale backups, unrelated file preservation, missing binary fail-closed");
 } finally { Directory.Delete(root,true); }
