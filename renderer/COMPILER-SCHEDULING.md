@@ -10,4 +10,13 @@ No bounded startup warm-up policy, history changes, diagnostic probes, event tim
 
 Validation: 1,024 identical stored pipelines, restored cache fixtures, warm driver cache, ABBA order. Mean compilation elapsed time changed from 2.569 s to 1.988 s (22.6% lower); CPU seconds increased from 8.73 to 12.27. This does not establish cold shader translation or on-track hitch improvement; the user reported unchanged on-track hitches. Queue admission, priority, lifetime, translation matching and worker-budget tests pass against the extracted headers. Syntax checks pass for the extracted pipeline translation unit; the original candidate passed Release and 2,610 local import checks. The later combined build's LLVM OOM remains under investigation; these results do not establish unlimited-session memory stability.
 
-Host tests under renderer/compiler-scheduling-tests compile against the patched shadGT src include directory, using C++20 or newer with assertions enabled (do not define NDEBUG). Run each resulting executable. Tests cover topology counts 0-1024, urgent promotion/duplicate ownership, worker-owned lifetimes, and ordinary work bypassing two active heavy builds.
+Host tests under renderer/compiler-scheduling-tests compile against the patched shadGT src include directory, using C++20 or newer with assertions enabled (do not define NDEBUG). Run each resulting executable. Tests cover topology counts 0-1024, urgent promotion/duplicate ownership, worker-owned lifetimes, and ordinary work bypassing queued heavy builds while the single heavy-build slot is occupied.
+
+## Current production budget
+
+The pinned renderer now caps translation and pipeline construction together at
+half the logical threads, up to eight workers, reserving capacity for gameplay and
+recording. A single-worker system keeps the required synchronous translation fallback.
+Heavy tessellation driver builds are limited to one. Precompilation uses shared
+pipeline libraries for ordinary stored pipelines and retains the tessellation path.
+The historic measurements above describe the earlier scheduling patch, not this budget.

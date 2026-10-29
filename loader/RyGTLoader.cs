@@ -2139,10 +2139,9 @@ namespace RyGT
         }
 
         // System memory (GPU.system_ram_gb): how much the game may use for things it can do
-        // without. With 16 GB the driver's pipeline cache file (it grows past 1 GB and is loaded
-        // whole, then copied again when saved) is off and fewer freed GPU images are kept for
-        // reuse. Tokyo rain race, committed memory: 32 GB setting ~11 GB average / 13.5 GB peak,
-        // 16 GB setting ~8.6 / 9.0 GB. Picked from the installed RAM the first time.
+        // without. Both profiles retain the shader store, startup precompilation and persistent
+        // pipeline cache. The 16 GB profile keeps fewer freed GPU images for reuse.
+        // Picked from installed RAM the first time; shader precompilation has its own checkbox.
         // Screen shape (GPU.aspect_ratio, GTS-009 in renderer patch 0051): GT Sport draws a 16:9
         // picture. "Fill the screen" widens the race camera to the shape of the game's window or
         // screen and stretches the picture over it (ultrawide without black bars; the HUD and menus
@@ -2177,10 +2176,10 @@ namespace RyGT
             {
                 bool large = ram.SelectedIndex == 1;
                 WriteSetting("GPU", "system_ram_gb", large ? 32 : 16);
-                WriteSetting("Vulkan", "pipeline_cache_enabled", large);
+                WriteSetting("Vulkan", "pipeline_cache_enabled", true);
                 WriteSetting("GPU", "image_recycle_mb", large ? 512 : 128);
             };
-            if (stored == 0)
+            if (stored == 0 || !ReadSetting("Vulkan", "pipeline_cache_enabled", true))
             {
                 try { apply(); } catch { }
             }
@@ -3042,6 +3041,10 @@ namespace RyGT
                     });
                     if (OldShaderCacheExists()) SetStatus("Moving your shaders to the shaders folder (once)...");
                     UsePortableShaderCache();
+                    // Repair the old 16 GB profile even when Settings was never opened.
+                    if (ReadIntSetting("GPU", "system_ram_gb", 0) == 16 &&
+                        !ReadSetting("Vulkan", "pipeline_cache_enabled", true))
+                        WriteSetting("Vulkan", "pipeline_cache_enabled", true);
                     EnsureShaderCacheIdentity();
                     // Folders set up by an earlier RyGT.exe or adcpatch get the offline livery scripts
                     // (again) now (a few seconds).
