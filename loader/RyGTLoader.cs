@@ -706,6 +706,11 @@ namespace RyGT
         }
     }
 
+    sealed class SetupDumpException : Exception
+    {
+        public SetupDumpException(string message) : base(message) { }
+    }
+
     /// Unwraps an unencrypted (fake-signed) PS4 SELF into a plain ELF.
     static class Self
     {
@@ -718,7 +723,8 @@ namespace RyGT
         {
             if (IsElf(d)) return d;
             if (d.Length < 32 || d[0] != 0x4f || d[1] != 0x15 || d[2] != 0x3d || d[3] != 0x1d)
-                throw new Exception(name + " is neither a SELF nor an ELF file.");
+                throw new SetupDumpException(name + " is neither a SELF nor an ELF file.\n\n" +
+                    "Re-dump your game/update and the PS4 sys_modules folder. Select the new dump folders, then run Set up again.");
             int count = BitConverter.ToUInt16(d, 24);
             var entries = new Dictionary<long, long[]>();
             for (int i = 0; i < count; i++)
@@ -2442,6 +2448,13 @@ namespace RyGT
             catch (Exception e) { Log("ERROR: " + e.Message); return 1; }
         }
 
+        void ShowSetupDumpHelp(Exception error)
+        {
+            if (error is SetupDumpException)
+                MessageBox.Show(this, error.Message, "Check your game dump and system modules",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+
         void StartSetup()
         {
             settings.Game = game.Text.Trim();
@@ -2457,14 +2470,19 @@ namespace RyGT
             var thread = new Thread(delegate ()
             {
                 bool ok = false;
+                Exception failure = null;
                 try { RunSetup(); ok = true; }
-                catch (Exception e) { Log("ERROR: " + e.Message); }
+                catch (Exception e) { failure = e; Log("ERROR: " + e.Message); }
                 BeginInvoke(new Action(delegate
                 {
                     busy = false;
                     RefreshState();
                     if (ok) status.Text = "Set up finished. Press Play.";
-                    else status.Text = "Set up failed; see the log.";
+                    else
+                    {
+                        status.Text = "Set up failed; see the log.";
+                        ShowSetupDumpHelp(failure);
+                    }
                 }));
             });
             thread.IsBackground = true;
@@ -2497,7 +2515,8 @@ namespace RyGT
             foreach (var name in FirmwareModules)
             {
                 var found = FindModule(settings.Modules, name);
-                if (found == null) throw new Exception("System module " + name + " was not found under " + settings.Modules + ".");
+                if (found == null) throw new SetupDumpException("System module " + name + ".sprx was not found under " + settings.Modules + ".\n\n" +
+                    "Re-dump the complete sys_modules folder from your PS4, including this module. Select the new folder, then run Set up again.");
                 firmware[name] = found;
             }
             foreach (var name in OptionalFirmwareModules)
@@ -3031,6 +3050,7 @@ namespace RyGT
             bool verified = false;
             var thread = new Thread(delegate ()
             {
+                Exception failure = null;
                 try
                 {
                     SetStatus("Checking the game executable...");
@@ -3063,12 +3083,17 @@ namespace RyGT
                     }
                     verified = true;
                 }
-                catch (Exception e) { Log("ERROR: " + e.Message); }
+                catch (Exception e) { failure = e; Log("ERROR: " + e.Message); }
                 BeginInvoke(new Action(delegate
                 {
                     busy = false;
                     RefreshState();
-                    if (!verified) { status.Text = "Game verification/rebuild failed; see the log. The game was not started."; return; }
+                    if (!verified)
+                    {
+                        status.Text = "Game verification/rebuild failed; see the log. The game was not started.";
+                        ShowSetupDumpHelp(failure);
+                        return;
+                    }
                     StartGame(root, settings.HddStreaming, experimentalSceneSize);
                     status.Text = "GT Sport is starting. Logs: logs\\stdout.log and logs\\stderr.log.";
                 }));
