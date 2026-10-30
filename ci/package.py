@@ -21,6 +21,14 @@ def sha(path):
         return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
+def write_packaged_defaults(stage):
+    config_path = stage / 'user/custom_configs/CUSA03220.json'
+    config = json.loads(config_path.read_text(encoding='utf-8-sig'))
+    config.setdefault('GPU', {})['precompile_shaders'] = True
+    config.setdefault('Vulkan', {})['pipeline_cache_enabled'] = True
+    config_path.write_text(json.dumps(config, indent=2) + '\n', encoding='utf-8')
+
+
 def verify_artifact(folder, filename, commit):
     actual_commit = (folder / 'RYGT-COMMIT.txt').read_text(encoding='utf-8-sig').strip()
     if actual_commit != commit:
@@ -100,6 +108,7 @@ def package():
     for item in required:
         if not (stage / item).is_file():
             raise RuntimeError(f'Incomplete runtime package: {item}')
+    write_packaged_defaults(stage)
     (stage / 'README.txt').write_text(
         'RyGT development CI package\n\n'
         'Run RyGT.exe to set up your own decrypted GT Sport CUSA03220 v1.69 dump.\n'
