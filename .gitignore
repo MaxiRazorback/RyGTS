@@ -59,3 +59,5 @@ Thumbs.db
 
 # CI bridge regression tests are source files.
 !/ci/tests/
+
+/.ci-renderer-diagnostics/

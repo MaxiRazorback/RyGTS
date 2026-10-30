@@ -708,6 +708,11 @@ namespace RyGT
         }
     }
 
+    sealed class SetupDumpException : Exception
+    {
+        public SetupDumpException(string message) : base(message) { }
+    }
+
     /// Unwraps an unencrypted (fake-signed) PS4 SELF into a plain ELF.
     static class Self
     {
@@ -720,7 +725,8 @@ namespace RyGT
         {
             if (IsElf(d)) return d;
             if (d.Length < 32 || d[0] != 0x4f || d[1] != 0x15 || d[2] != 0x3d || d[3] != 0x1d)
-                throw new Exception(name + " is neither a SELF nor an ELF file.");
+                throw new SetupDumpException(name + " is neither a SELF nor an ELF file.\n\n" +
+                    "Re-dump your game/update and the PS4 sys_modules folder. Select the new dump folders, then run Set up again.");
             int count = BitConverter.ToUInt16(d, 24);
             var entries = new Dictionary<long, long[]>();
             for (int i = 0; i < count; i++)
@@ -2454,10 +2460,9 @@ namespace RyGT
         }
 
         // System memory (GPU.system_ram_gb): how much the game may use for things it can do
-        // without. With 16 GB the driver's pipeline cache file (it grows past 1 GB and is loaded
-        // whole, then copied again when saved) is off and fewer freed GPU images are kept for
-        // reuse. Tokyo rain race, committed memory: 32 GB setting ~11 GB average / 13.5 GB peak,
-        // 16 GB setting ~8.6 / 9.0 GB. Picked from the installed RAM the first time.
+        // without. Both profiles retain the shader store, startup precompilation and persistent
+        // pipeline cache. The 16 GB profile keeps fewer freed GPU images for reuse.
+        // Picked from installed RAM the first time; shader precompilation has its own checkbox.
         // Screen shape (GPU.aspect_ratio, GTS-009 in renderer patch 0051): GT Sport draws a 16:9
         // picture. "Fill the screen" widens the race camera to the shape of the game's window or
         // screen and stretches the picture over it (ultrawide without black bars; the HUD and menus
@@ -2492,10 +2497,10 @@ namespace RyGT
             {
                 bool large = ram.SelectedIndex == 1;
                 WriteSetting("GPU", "system_ram_gb", large ? 32 : 16);
-                WriteSetting("Vulkan", "pipeline_cache_enabled", large);
+                WriteSetting("Vulkan", "pipeline_cache_enabled", true);
                 WriteSetting("GPU", "image_recycle_mb", large ? 512 : 128);
             };
-            if (stored == 0)
+            if (stored == 0 || !ReadSetting("Vulkan", "pipeline_cache_enabled", true))
             {
                 try { apply(); } catch { }
             }
@@ -2758,6 +2763,13 @@ namespace RyGT
             catch (Exception e) { Log("ERROR: " + e.Message); return 1; }
         }
 
+        void ShowSetupDumpHelp(Exception error)
+        {
+            if (error is SetupDumpException)
+                MessageBox.Show(this, error.Message, "Check your game dump and system modules",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+
         void StartSetup()
         {
             settings.Game = game.Text.Trim();
@@ -2773,14 +2785,19 @@ namespace RyGT
             var thread = new Thread(delegate ()
             {
                 bool ok = false;
+                Exception failure = null;
                 try { RunSetup(); ok = true; }
-                catch (Exception e) { Log("ERROR: " + e.Message); }
+                catch (Exception e) { failure = e; Log("ERROR: " + e.Message); }
                 BeginInvoke(new Action(delegate
                 {
                     busy = false;
                     RefreshState();
                     if (ok) status.Text = "Set up finished. Press Play.";
-                    else status.Text = "Set up failed; see the log.";
+                    else
+                    {
+                        status.Text = "Set up failed; see the log.";
+                        ShowSetupDumpHelp(failure);
+                    }
                 }));
             });
             thread.IsBackground = true;
@@ -2813,7 +2830,8 @@ namespace RyGT
             foreach (var name in FirmwareModules)
             {
                 var found = FindModule(settings.Modules, name);
-                if (found == null) throw new Exception("System module " + name + " was not found under " + settings.Modules + ".");
+                if (found == null) throw new SetupDumpException("System module " + name + ".sprx was not found under " + settings.Modules + ".\n\n" +
+                    "Re-dump the complete sys_modules folder from your PS4, including this module. Select the new folder, then run Set up again.");
                 firmware[name] = found;
             }
             foreach (var name in OptionalFirmwareModules)
@@ -3347,6 +3365,7 @@ namespace RyGT
             bool verified = false;
             var thread = new Thread(delegate ()
             {
+                Exception failure = null;
                 try
                 {
                     SetStatus("Checking the game executable...");
@@ -3357,6 +3376,10 @@ namespace RyGT
                     });
                     if (OldShaderCacheExists()) SetStatus("Moving your shaders to the shaders folder (once)...");
                     UsePortableShaderCache();
+                    // Repair the old 16 GB profile even when Settings was never opened.
+                    if (ReadIntSetting("GPU", "system_ram_gb", 0) == 16 &&
+                        !ReadSetting("Vulkan", "pipeline_cache_enabled", true))
+                        WriteSetting("Vulkan", "pipeline_cache_enabled", true);
                     EnsureShaderCacheIdentity();
                     // Folders set up by an earlier RyGT.exe or adcpatch get the offline livery scripts
                     // (again) now (a few seconds).
@@ -3375,12 +3398,17 @@ namespace RyGT
                     }
                     verified = true;
                 }
-                catch (Exception e) { Log("ERROR: " + e.Message); }
+                catch (Exception e) { failure = e; Log("ERROR: " + e.Message); }
                 BeginInvoke(new Action(delegate
                 {
                     busy = false;
                     RefreshState();
-                    if (!verified) { status.Text = "Game verification/rebuild failed; see the log. The game was not started."; return; }
+                    if (!verified)
+                    {
+                        status.Text = "Game verification/rebuild failed; see the log. The game was not started.";
+                        ShowSetupDumpHelp(failure);
+                        return;
+                    }
                     StartGame(root, settings.HddStreaming, experimentalSceneSize);
                     status.Text = "GT Sport is starting. Logs: logs\\stdout.log and logs\\stderr.log.";
                 }));
