@@ -3,6 +3,13 @@
 Releases before 1.0.7 predate this file; their history lives in the commit
 log and the existing documentation.
 
+## Unreleased
+
+### Renderer streaming and CPU recording
+* Prevent duplicate full-texture uploads within one drain when CPU streaming writes arrive during a snapshot; retain the write for the next image use.
+* Avoid eager uploads when discarding large texture backing, reuse upload resources, and retain GPU-owned texture data.
+* Update renderer preparation, shader-store loading and descriptor host updates, with deterministic GPU and queue regression coverage. Remaining frame-time spikes are still under investigation.
+
 ## 1.1.0
 
 ### Versioning and Infrastructure Cleanup
