@@ -6,6 +6,6 @@ workflow:
     - when: never
 
 gitlab-ci-disabled:
-  script: echo 'Use xacidr4inx/RyGT-ci Actions and the GitLab rygt-ci Package Registry'
+  script: echo 'Use RyGT-Team/RyGT-ci Actions and the GitLab ci/debug-ci packages'
   rules:
     - when: never

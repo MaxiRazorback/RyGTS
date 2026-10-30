@@ -1,7 +1,7 @@
 # CI packages
 
 GitLab is the authoritative source and download host. GitHub Actions in
-[`xacidr4inx/RyGT-ci`](https://github.com/xacidr4inx/RyGT-ci/actions/workflows/ci-package.yml)
+[`RyGT-Team/RyGT-ci`](https://github.com/RyGT-Team/RyGT-ci/actions/workflows/ci-package.yml)
 builds, tests, packages and publishes. No GitLab runner is used.
 
 GitLab project CI/CD is disabled (`builds_access_level=disabled`). The repository
@@ -19,16 +19,21 @@ merge-request branches are not publication inputs.
 
 ## Downloads
 
-Open GitLab **Deploy → Package Registry**, then package **rygt-ci**.
-Each version is `development-<full source commit>` and contains:
+Open GitLab **Deploy → Package Registry**. Two separate packages are produced:
 
-- `RyGT-development-<short commit>.zip`
-- the matching `.zip.sha256`
-- `CI-BUILD.json`, recording source commit, checksum and GitHub run URL
+- **ci**: Release, `RyGT-ci-<short commit>.zip`.
+- **debug-ci**: optimized Debug/Diagnostics, `RyGT-debug-ci-<short commit>.zip`.
+
+Each channel uses version `development-<full source commit>`, with its own
+`.zip.sha256` and `CI-BUILD.json` recording channel, source commit, checksum and
+GitHub run URL. Both channels must have valid completion markers to skip a build.
+Both archives and checksums are verified before either completion marker is
+published. GitHub also retains the two packages as separate artifacts, alongside
+the `CI-PACKAGES.json` manifest.
 
 These are CI builds. Publishing does not create a tag, release, announcement or
 changelog. The completion marker is uploaded last, after reading back and
-verifying both package files. Package versions persist until removed from the
+verifying all package files. Package versions persist until removed from the
 registry. GitHub intermediate artifacts expire after seven days.
 
 ## Build and validation
@@ -44,7 +49,30 @@ immutable October 25 redistributable archive pinned by SHA-256 in `ci/package.py
 They are not rebuilt by this workflow; the Linux test binary is not substituted
 for a Windows executable. BUILD_INFO.txt records exactly what was rebuilt.
 Game executable/data, firmware, saves, logs, shader caches and NVIDIA SDK files
-are excluded. Compilation and package validation do not replace live GPU tests.
+are excluded from both packages. Base-archive PDBs remain forbidden; only
+verified matching launcher/renderer symbols are explicitly added to debug-ci.
+Compilation and package validation do not replace live GPU tests.
+
+## Debug diagnostics
+
+Debug uses optimized `RelWithDebInfo` native code and an optimized launcher,
+with full matching PDBs beside each rebuilt module. It includes a versioned
+diagnostics-only renderer overlay and optional capture tools. Release uses the
+unmodified pinned renderer. The overlay refuses another renderer pin until it
+has been rebased and validated. Package metadata identifies both the pin and
+overlay hashes. Other runtime helpers retain the same pinned base provenance;
+this does not provide symbols for those helpers.
+
+Extract ci and debug-ci into separate folders. Debug's README explains setup,
+F8 graphics capture, continuous frame timing, visible-frame bursts and offline
+analysis. Extra captures cover shader identities, CPU/GPU pass spans, shadow and
+depth state, effective mip/LOD sampler settings, indirect dispatch arguments and
+bounded mip readbacks. The optional collector requires Python 3.12 or newer.
+No debugger or Python is required for ordinary gameplay. Diagnostic frames can
+perturb timing, and timestamp spans include dependencies; use normal-play
+recording for performance comparisons. The tracing overlay does not fix graphics
+or change culling/LOD policy. Both packages preserve Discord RPC and enable shader
+precompilation and pipeline caching in the factory configuration, including 16 GB.
 
 `renderer/source.json` pins the ShadGT `ryty-gpu` commit. Push a renderer change
 there before publishing a RyGT pin that references it. Local investigation
@@ -71,4 +99,6 @@ compiler-rt, set `LLVM_ROOT`, and run:
 ```powershell
 ./ci/build-windows.ps1 -Target Launcher
 ./ci/build-windows.ps1 -Target Renderer
+./ci/build-windows.ps1 -Target Launcher -Flavor Diagnostics
+./ci/build-windows.ps1 -Target Renderer -Flavor Diagnostics
 ```
