@@ -1,7 +1,7 @@
 # CI packages
 
 GitLab is the authoritative source and download host. GitHub Actions in
-[`RyGT-Team/RyGT-ci`](https://github.com/RyGT-Team/RyGT-ci/actions/workflows/ci-package.yml)
+[`RyGT-Team/RyGTS-ci`](https://github.com/RyGT-Team/RyGTS-ci/actions/workflows/ci-package.yml)
 builds, tests, packages and publishes. No GitLab runner is used.
 
 GitLab project CI/CD is disabled (`builds_access_level=disabled`). The repository
@@ -21,8 +21,8 @@ merge-request branches are not publication inputs.
 
 Open GitLab **Deploy → Package Registry**. Two separate packages are produced:
 
-- **ci**: Release, `RyGT-ci-<short commit>.zip`.
-- **debug-ci**: optimized Debug/Diagnostics, `RyGT-debug-ci-<short commit>.zip`.
+- **ci**: Release, `RyGTS-ci-<short commit>.zip`.
+- **debug-ci**: optimized Debug/Diagnostics, `RyGTS-debug-ci-<short commit>.zip`.
 
 Each channel uses version `development-<full source commit>`, with its own
 `.zip.sha256` and `CI-BUILD.json` recording channel, source commit, checksum and
@@ -75,7 +75,7 @@ or change culling/LOD policy. Both packages preserve Discord RPC and enable shad
 precompilation and pipeline caching in the factory configuration, including 16 GB.
 
 `renderer/source.json` pins the ShadGT `ryty-gpu` commit. Push a renderer change
-there before publishing a RyGT pin that references it. Local investigation
+there before publishing a RyGTS pin that references it. Local investigation
 branches and unpushed renderer commits are not included automatically.
 
 ## Workflow maintenance and credentials
@@ -87,7 +87,7 @@ Official actions are pinned to full commit IDs. The old GitLab bridge is retired
 `.gitlab-ci.yml` explicitly disables GitLab pipelines.
 
 GitHub secret `GITLAB_PACKAGE_TOKEN` is a project deploy token restricted to
-RyGT package read/write access. It is exposed only to the final publish step,
+RyGTS package read/write access. It is exposed only to the final publish step,
 not to Windows builds or Linux converter tests. The initial token expires
 January 25, 2027; rotate it before then. It cannot create releases, modify source
 or report commit statuses. Build status and logs are in GitHub Actions; GitLab

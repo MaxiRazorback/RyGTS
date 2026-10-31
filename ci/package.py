@@ -9,7 +9,7 @@ import shutil
 import urllib.request
 import zipfile
 
-BASE_URL = ('https://gitlab.com/api/v4/projects/rygt-team%2FRyGT/packages/generic/'
+BASE_URL = ('https://gitlab.com/api/v4/projects/rygt-team%2FRyGTS/packages/generic/'
             'gt-sport-prerelease/gt-sport-2026-10-25/'
             'GTSport-Ryty-shadGT-2026-10-25-prerelease%2Ezip')
 BASE_SHA = '563349eb82d091d16a7d6864dca437d17a6dd3aee6f994d256399bf29aae7702'
@@ -116,7 +116,7 @@ def assemble(base, commit, flavor, channel, suffix):
         raise RuntimeError('Renderer source pin mismatch')
     if b'1440140585595047977' not in renderer.read_bytes() or b'DISCORD-RPC: compiled in;' not in renderer.read_bytes():
         raise RuntimeError('Discord RPC missing or application ID incorrect')
-    name = f'RyGT-{channel}-{commit[:8]}'
+    name = f'RyGTS-{channel}-{commit[:8]}'
     destination = Path('dist'); stage = destination / name
     stage.mkdir(parents=True, exist_ok=False)
     extract_runtime(base, stage)
@@ -157,7 +157,7 @@ def assemble(base, commit, flavor, channel, suffix):
         shutil.copy2(root / 'ci/diagnostics/DEBUG-README.txt', stage / 'README.txt')
     else:
         (stage / 'README.txt').write_text(
-            'RyGT Release CI package (ci)\n\nRun RyGT.exe to set up your own decrypted GT Sport CUSA03220 v1.69 dump.\n'
+            'RyGTS Release CI package (ci)\n\nRun RyGT.exe to set up your own decrypted GT Sport CUSA03220 v1.69 dump.\n'
             'Debug/Diagnostics is distributed separately as debug-ci.\n'
             'Game executable/data, firmware, saves, logs, caches and NVIDIA SDK DLLs are excluded.\n'
             'Supply required firmware modules and optional NVIDIA upscaler files yourself.\n'

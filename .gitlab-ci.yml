@@ -6,6 +6,6 @@ workflow:
     - when: never
 
 gitlab-ci-disabled:
-  script: echo 'Use RyGT-Team/RyGT-ci Actions and the GitLab ci/debug-ci packages'
+  script: echo 'Use RyGT-Team/RyGTS-ci Actions and the GitLab ci/debug-ci packages'
   rules:
     - when: never
