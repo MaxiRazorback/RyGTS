@@ -46,16 +46,35 @@ def movzx_byte_loads(code):
         i = max(end, start + 1)
 
 
-def pdb_procedure_size(dump, name):
-    """Read the CodeView procedure code size for a named PDB symbol."""
-    lines = dump.splitlines()
-    sizes = []
-    for i, line in enumerate(lines):
-        if name in line:
-            match = re.search(r"code size\s*=\s*(\d+)", "\n".join(lines[i:i + 3]))
+def pdb_procedure_ref(lines, name):
+    """Return (zero_based_module_index, module_record_offset) for one PROCREF."""
+    refs = []
+    iterator = iter(lines)
+    for line in iterator:
+        if name in line and re.search(r"S_PROCREF\b", line):
+            detail = next(iterator, "")
+            match = re.search(r"module\s*=\s*(\d+).*?offset\s*=\s*(\d+)", detail)
             if match:
-                sizes.append(int(match.group(1)))
-    return max(sizes, default=0)
+                one_based_module, record_offset = map(int, match.groups())
+                refs.append((one_based_module - 1, record_offset))
+    if len(refs) != 1:
+        raise ValueError(f"expected one PDB PROCREF for {name}, found {refs}")
+    return refs[0]
+
+
+def pdb_procedure(dump, name, record_offset):
+    """Return (segment, offset, code_size) for the referenced procedure record."""
+    lines = dump.splitlines()
+    for i, line in enumerate(lines):
+        record = re.match(r"\s*(\d+)\s+\|\s+S_[GL]PROC32(?:_ID)?\b", line)
+        if record and int(record.group(1)) == record_offset and name in line:
+            match = re.search(
+                r"addr\s*=\s*(\d+):(\d+).*?code size\s*=\s*(\d+)",
+                "\n".join(lines[i:i + 3]),
+            )
+            if match:
+                return tuple(map(int, match.groups()))
+    raise ValueError(f"PDB procedure record unavailable for {name}")
 
 
 def pe_image_base(pe, pe_offset):

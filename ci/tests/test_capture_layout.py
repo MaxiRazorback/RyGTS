@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[1] / 'diagnostics'))
-from capture_layout import movzx_byte_loads, pdb_procedure_size, pe_image_base
+from capture_layout import movzx_byte_loads, pdb_procedure, pdb_procedure_ref, pe_image_base
 
 
 class CaptureLayoutTests(unittest.TestCase):
@@ -45,13 +45,23 @@ class CaptureLayoutTests(unittest.TestCase):
                 b'\x48\x0f\xb6\x81\x50\x00\x00\x00')
         self.assertEqual([item[2] for item in movzx_byte_loads(code)], [0x50, 0x50])
 
-    def test_reads_pdb_function_code_size_not_record_size(self):
+    def test_reads_pdb_function_address_and_code_size_not_record_size(self):
         dump = (
-            "12 | S_GPROC32 [size = 44] `?FrameDumpFlip@Rasterizer@Vulkan@@`\n"
-            "parent = 0, end = 192, addr = 0001:1000, code size = 7168\n"
+            "541172 | S_GPROC32 [size = 76] `Vulkan::Rasterizer::FrameDumpFlip`\n"
+            "parent = 0, end = 550444, addr = 0001:3435520, code size = 9235\n"
             "type = `void ()`, debug start = 4, debug end = 32\n"
         )
-        self.assertEqual(pdb_procedure_size(dump, "FrameDumpFlip"), 7168)
+        self.assertEqual(pdb_procedure(dump, "Vulkan::Rasterizer::FrameDumpFlip", 541172), (1, 3435520, 9235))
+
+    def test_resolves_exact_pdb_procref_to_zero_based_module(self):
+        dump = (
+            "5522292 | S_PROCREF [size = 48] `Vulkan::Rasterizer::FrameDumpFlip`\n"
+            "module = 99, sum name = 0, offset = 541172\n"
+        )
+        self.assertEqual(
+            pdb_procedure_ref(dump.splitlines(), "Vulkan::Rasterizer::FrameDumpFlip"),
+            (98, 541172),
+        )
 
     def test_reads_pe32_and_pe32_plus_image_base_from_optional_header(self):
         pe32_plus = bytearray(64)
