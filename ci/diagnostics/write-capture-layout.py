@@ -20,7 +20,12 @@ assert len(cmps)>=2 and cmps[0][1]+1==cmps[1][1],cmps
 collect=cmps[0][1];flipcode=pe[offset(flip):offset(flip)+8192]
 byte_loads=list(movzx_byte_loads(flipcode))
 choices=collections.Counter(displacement for _,_,displacement in byte_loads if collect+32<displacement<collect+1024)
-assert len(choices)==1 and choices.most_common()[0][1]>=2,choices
+if len(choices)!=1 or choices.most_common()[0][1]<2:
+ sites=[]
+ for m in re.finditer(b'\x0f\xb6',flipcode):
+  modrm=flipcode[m.start()+2] if m.start()+2<len(flipcode) else None
+  sites.append(dict(rva=flip+m.start(),bytes=flipcode[m.start():m.start()+12].hex(),modrm=modrm,mod=None if modrm is None else modrm>>6))
+ raise AssertionError(dict(choices=choices,decoded=byte_loads,opcode_sites=sites[:64]))
 request=next(iter(choices));reqpos,reqend=next((offset,end) for offset,end,displacement in byte_loads if displacement==request)
 guards=[dict(rva=start+cmps[0][0],bytes=code[cmps[0][0]:cmps[0][0]+7].hex()),dict(rva=flip+reqpos,bytes=flipcode[reqpos:reqend].hex())]
 entry=dict(rasterizer_rva=glob,collecting_offset=collect,done_offset=collect+1,native_offset=collect-8,request_offset=request,guards=guards)

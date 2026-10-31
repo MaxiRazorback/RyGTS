@@ -15,16 +15,31 @@ def movzx_byte_loads(code):
             continue
 
         modrm = code[i + 2]
-        if modrm >> 6 != 0b10:  # Require a 32-bit displacement.
+        mod = modrm >> 6
+        rm = modrm & 7
+        if mod == 0b11:  # Register source, not a memory byte load.
             i = start + 1
             continue
-        displacement_at = i + 3
-        if modrm & 7 == 4:  # SIB follows the ModRM byte.
-            displacement_at += 1
-        end = displacement_at + 4
+
+        sib = rm == 4
+        displacement_at = i + 3 + int(sib)
+        sib_base = code[i + 3] & 7 if sib and i + 3 < len(code) else None
+        if mod == 0:
+            # [RIP+disp32] or SIB with no base carries a displacement despite mod=00.
+            displacement_size = 4 if rm == 5 or (sib and sib_base == 5) else 0
+        elif mod == 1:
+            displacement_size = 1
+        else:  # mod == 2
+            displacement_size = 4
+        end = displacement_at + displacement_size
         if end > len(code):
             i = start + 1
             continue
-        displacement = struct.unpack_from("<i", code, displacement_at)[0]
+        if displacement_size == 1:
+            displacement = struct.unpack_from("<b", code, displacement_at)[0]
+        elif displacement_size == 4:
+            displacement = struct.unpack_from("<i", code, displacement_at)[0]
+        else:
+            displacement = 0
         yield start, end, displacement
-        i = end
+        i = max(end, start + 1)

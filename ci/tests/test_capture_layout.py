@@ -22,9 +22,23 @@ class CaptureLayoutTests(unittest.TestCase):
         self.assertEqual(list(movzx_byte_loads(rex)), [(0, 8, 0x20)])
         self.assertEqual(list(movzx_byte_loads(sib)), [(0, 9, 0x38)])
 
-    def test_ignores_register_and_short_displacement_forms(self):
+    def test_decodes_signed_disp8_and_sib_disp8_forms(self):
+        disp8 = b'\x0f\xb6\x41\x50'
+        negative = b'\x0f\xb6\x41\xf0'
+        sib = b'\x48\x0f\xb6\x44\x24\x50'
+        self.assertEqual(list(movzx_byte_loads(disp8)), [(0, 4, 0x50)])
+        self.assertEqual(list(movzx_byte_loads(negative)), [(0, 4, -16)])
+        self.assertEqual(list(movzx_byte_loads(sib)), [(0, 6, 0x50)])
+
+    def test_decodes_rip_relative_disp32_and_no_displacement(self):
+        rip_relative = b'\x0f\xb6\x05\x10\x00\x00\x00'
+        no_displacement = b'\x0f\xb6\x01'
+        self.assertEqual(list(movzx_byte_loads(rip_relative)), [(0, 7, 0x10)])
+        self.assertEqual(list(movzx_byte_loads(no_displacement)), [(0, 3, 0)])
+
+    def test_ignores_register_form_and_decodes_short_displacement(self):
         code = b'\x0f\xb6\xc0\x0f\xb6\x46\x08\x0f\xb6\x81\x40\x00\x00\x00'
-        self.assertEqual(list(movzx_byte_loads(code)), [(7, 14, 0x40)])
+        self.assertEqual(list(movzx_byte_loads(code)), [(3, 7, 8), (7, 14, 0x40)])
 
     def test_counts_repeated_displacements(self):
         code = (b'\x0f\xb6\x86\x50\x00\x00\x00'
