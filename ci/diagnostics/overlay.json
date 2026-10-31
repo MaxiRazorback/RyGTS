@@ -1,6 +1,6 @@
 {
   "renderer_commit": "de5c80ad6d449edfd6264d8c732cbd2e51696174",
-  "base_native_sha256": "150ee1494a8025ca8496a2fa7e7e7aa42bba21f790e13c747df298b8703170b0",
+  "base_native_sha256": "6834bc3b3acb35451a9a8590617a1958ba492400b6689f2b740e8d923a1a0287",
   "files": [
     "scene_capture_trace.h",
     "trace_mip_layout.h"
