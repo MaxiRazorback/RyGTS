@@ -103,7 +103,7 @@
     },
     "src/video_core/renderer_vulkan/vk_rasterizer_native.cpp": {
       "baseline_sha256": "f47f0378dc7adfa245d0b32ad99e383cd53a7438aa7bdc9332948707a777a7dc",
-      "new_sha256": "150ee1494a8025ca8496a2fa7e7e7aa42bba21f790e13c747df298b8703170b0"
+      "new_sha256": "6834bc3b3acb35451a9a8590617a1958ba492400b6689f2b740e8d923a1a0287"
     }
   }
 }
