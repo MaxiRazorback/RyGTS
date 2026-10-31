@@ -114,6 +114,14 @@ def assemble(base, commit, flavor, channel, suffix):
     source = source_file.read_text(encoding='utf-8-sig')
     if source.splitlines() != [pin['repository'], pin['commit']]:
         raise RuntimeError('Renderer source pin mismatch')
+    runtime_file = verify_artifact(renderer_folder, 'RUNTIME-SOURCE.json', commit, 'data')
+    runtime_overlay = json.loads(runtime_file.read_text(encoding='utf-8-sig'))
+    runtime_spec = json.loads((root / 'ci/runtime/overlay.json').read_text(encoding='utf-8'))
+    runtime_patch = root / 'ci/runtime/production-source.patch'
+    if (runtime_overlay.get('schema') != 1 or runtime_overlay.get('renderer_commit') != pin['commit'] or
+            runtime_overlay.get('overlay_sha256') != sha(runtime_patch) or
+            runtime_overlay.get('source_files') != runtime_spec.get('source_files')):
+        raise RuntimeError('Production renderer overlay provenance mismatch')
     if b'1440140585595047977' not in renderer.read_bytes() or b'DISCORD-RPC: compiled in;' not in renderer.read_bytes():
         raise RuntimeError('Discord RPC missing or application ID incorrect')
     name = f'RyGTS-{channel}-{commit[:8]}'
@@ -135,6 +143,7 @@ def assemble(base, commit, flavor, channel, suffix):
         configuration='RelWithDebInfo' if suffix else 'Release', optimized=True,
         pipeline=os.environ.get('CI_PIPELINE_URL'), runtime_base_url=BASE_URL, runtime_base_sha256=BASE_SHA,
         renderer_source=source, launcher_sha256=sha(launcher), renderer_sha256=sha(renderer),
+        runtime_overlay=runtime_overlay,
         rebuilt=['RyGTS.exe', 'libs/libSceVideoOut.prx'],
         retained='Other runtime libraries and Windows conversion helpers from pinned October 25 archive')
     if suffix:

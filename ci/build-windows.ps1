@@ -23,6 +23,7 @@ if ($Target -eq 'Launcher') {
     $env:LIB = "$($builtins.DirectoryName);$env:LIB"
     $source = Join-Path (Get-Location) ('.ci-renderer' + $suffix)
     Invoke-Checked 'python' @('ci/prepare-renderer.py', $source)
+    Invoke-Checked 'python' @('ci/runtime/apply.py', $source)
     if ($Flavor -eq 'Diagnostics') { Invoke-Checked 'python' @('ci/diagnostics/apply.py', $source) }
     $configuration = if ($Flavor -eq 'Diagnostics') { 'RelWithDebInfo' } else { 'Release' }
     if (!$env:VCINSTALLDIR) {
@@ -41,6 +42,7 @@ if ($Target -eq 'Launcher') {
     $binary = Get-ChildItem "$source/Build/ci" -Recurse -Filter libSceVideoOut.prx
     if (@($binary).Count -ne 1) { throw 'Expected exactly one renderer output' }
     Copy-Item $binary.FullName $out
+    Copy-Item "$source/RUNTIME-SOURCE.json" "$out/RUNTIME-SOURCE.json"
     $symbols = @(Get-ChildItem "$source/Build/ci" -Recurse -Filter 'libSceVideoOut.pdb')
     if ($Flavor -eq 'Diagnostics' -and $symbols.Count -ne 1) { throw 'Exactly one matching renderer PDB required' }
     $symbols | Copy-Item -Destination $out

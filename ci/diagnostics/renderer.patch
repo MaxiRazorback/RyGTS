@@ -1,6 +1,21 @@
+diff --git a/ryty_gpu/RytyGpu.cmake b/ryty_gpu/RytyGpu.cmake
+index 54532cd8..e41bc306 100644
+--- a/ryty_gpu/RytyGpu.cmake
++++ b/ryty_gpu/RytyGpu.cmake
+@@ -63,7 +63,7 @@ function(ryty_add_library target output)
+         target_link_libraries(${target} PRIVATE mincore wbemuuid)
+         target_link_options(${target} PRIVATE /errorlimit:0)
+         # Line tables and a PDB, so crash and assertion stacks (module+offset) can be symbolized.
+-        target_compile_options(${target} PRIVATE /clang:-gline-tables-only /Z7)
++        target_compile_options(${target} PRIVATE /clang:-g /Z7)
+         target_link_options(${target} PRIVATE /DEBUG:FULL)
+         if (MSVC)
+             target_link_libraries(${target} PRIVATE clang_rt.builtins-x86_64.lib)
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer_native.cpp b/src/video_core/renderer_vulkan/vk_rasterizer_native.cpp
+index d0506731..d4704b95 100644
 --- a/src/video_core/renderer_vulkan/vk_rasterizer_native.cpp
 +++ b/src/video_core/renderer_vulkan/vk_rasterizer_native.cpp
-@@ -78,7 +78,14 @@
+@@ -81,7 +81,14 @@ namespace VideoCore {
  vk::ImageViewType ConvertImageViewType(AmdGpu::ImageType type);
  }
  
@@ -15,32 +30,24 @@
  bool RytyGtsInRace();
  extern std::atomic<u64> g_prepared_frames;
  bool RytyGtsMenuSnapshotsAllowed();
-@@ -87,6 +94,7 @@
- thread_local u64 descriptor_hash_refreshed = 0;
- 
- using FlatUploadMemo = ImmutableUploadMemo<vk::DescriptorBufferInfo, Shader::MaxStageTypes>;
-+
- FlatUploadMemo& UploadMemoFor(const NativeRenderer* renderer) {
-     struct Local { const NativeRenderer* owner{}; FlatUploadMemo memo; };
-     static thread_local Local local;
-@@ -626,6 +634,7 @@
+@@ -631,6 +638,7 @@ void NativeRenderer::FinishNativeFsr(const Targets& targets) {
  }
  
  NativeRenderer::NativeRenderer(Rasterizer& rasterizer) : r{rasterizer} {
 +    LOG_INFO(Render_Vulkan, "DIAGNOSTICS-BUILD: optimized graphics trace; F8 captures pass, shadow, occlusion, mip and LOD state");
+     sampler_cache_epoch.fetch_add(1, std::memory_order_acq_rel);
      device = Native::Rhi::CreateVulkanDevice(r.instance);
      ASSERT_MSG(device, "NAT-100: no native device");
-     const VkSemaphore semaphore = r.scheduler.GetWorkSemaphore()->Handle();
-@@ -877,6 +886,8 @@
+@@ -883,6 +891,8 @@ NativeRenderer::NativeRenderer(Rasterizer& rasterizer) : r{rasterizer} {
  }
  
  NativeRenderer::~NativeRenderer() {
 +    scene_indirect_buffer.reset();scene_indirect_args.clear();
 +    if(SceneTrace::state.pool){const auto pool=SceneTrace::state.pool;const auto device=r.instance.GetDevice();r.scheduler.DeferOperation([device,pool]{device.destroyQueryPool(pool);});SceneTrace::state={};}
      mirror_preparation.reset(); // Join before any device or direct-memory teardown.
+     sampler_cache_epoch.fetch_add(1, std::memory_order_acq_rel);
      std::scoped_lock lock{mutex};
-     const vk::Device vk_device = r.instance.GetDevice();
-@@ -989,9 +1000,18 @@
+@@ -996,9 +1006,18 @@ Native::MadeImage NativeRenderer::MakeImage(const VideoCore::ImageInfo& info, bo
  vk::ImageView NativeRenderer::View(const Native::ImageEntry& entry,
                                     const VideoCore::ImageViewInfo& requested, ViewUse use) {
      std::scoped_lock lock{views_mutex};
@@ -59,7 +66,7 @@
              return *record.view;
          }
      }
-@@ -1083,6 +1103,8 @@
+@@ -1090,6 +1109,8 @@ vk::ImageView NativeRenderer::View(const Native::ImageEntry& entry,
          return {};
      }
      const vk::ImageView handle = *view;
@@ -68,7 +75,7 @@
      records.push_back({requested, use, std::move(view)});
      return handle;
  }
-@@ -3042,6 +3064,7 @@
+@@ -3051,6 +3072,7 @@ void NativeRenderer::BindBuffers(const Shader::Info& stage, const AmdGpu::Regs&
                  }
              }
          }
@@ -76,7 +83,7 @@
          b.buffers.push_back(info);
          b.write_sets.push_back(u8(Shader::Backend::StageSet(u32(stage.sw_stage)))); // SHD-002
          b.writes.push_back(vk::WriteDescriptorSet{
-@@ -3059,6 +3082,46 @@
+@@ -3068,6 +3090,46 @@ void NativeRenderer::BindBuffers(const Shader::Info& stage, const AmdGpu::Regs&
  
  void NativeRenderer::BindTextures(const Shader::Info& stage, const AmdGpu::Regs& regs,
                                    Shader::Backend::Bindings& binding, DrawBindings& b) {
@@ -123,7 +130,7 @@
      for (const auto& image_desc : stage.images) {
          auto tsharp = image_desc.GetSharp(stage);
          MatchExperimentalCompositionTexture(tsharp, stage, image_desc, *registry);
-@@ -3080,6 +3143,7 @@
+@@ -3089,6 +3151,7 @@ void NativeRenderer::BindTextures(const Shader::Info& stage, const AmdGpu::Regs&
              binding.unified += num_bindings;
          };
          const auto bind_null = [&](u32 reason) {
@@ -131,7 +138,7 @@
              for (u32 i = 0; i < num_bindings; ++i) {
                  b.images.push_back({VK_NULL_HANDLE, VK_NULL_HANDLE, vk::ImageLayout::eGeneral});
              }
-@@ -3196,7 +3260,7 @@
+@@ -3209,7 +3272,7 @@ void NativeRenderer::BindTextures(const Shader::Info& stage, const AmdGpu::Regs&
                  const char* env = std::getenv("RYGT_FRAME_DUMP_ALL_TEXTURES");
                  return env && env[0] == '1';
              }();
@@ -140,7 +147,7 @@
                  auto key = Rasterizer::FrameDumpTextureKey(desc.info); // NAT-123
                  if (std::ranges::find(dump_textures, key, &decltype(dump_textures)::value_type::first) ==
                      dump_textures.end()) {
-@@ -3223,6 +3287,23 @@
+@@ -3236,6 +3299,23 @@ void NativeRenderer::BindTextures(const Shader::Info& stage, const AmdGpu::Regs&
                  View(*entry, view_info, storage ? ViewUse::Storage
                                                 : cube_sampling ? ViewUse::CubeSampled
                                                             : ViewUse::Sampled);
@@ -164,7 +171,7 @@
              b.images.push_back({VK_NULL_HANDLE, view, vk::ImageLayout::eGeneral});
          }
          if (memo) {
-@@ -3244,6 +3325,7 @@
+@@ -3257,6 +3337,7 @@ void NativeRenderer::BindTextures(const Shader::Info& stage, const AmdGpu::Regs&
                                  regs.ta_bc_base.Address() == 0)) {
              ssharp = AmdGpu::Sampler{};
          }
@@ -172,7 +179,7 @@
          b.images.push_back({SamplerFor(ssharp, regs.ta_bc_base, sampler.is_depth), VK_NULL_HANDLE,
                              vk::ImageLayout::eGeneral});
          b.write_sets.push_back(u8(Shader::Backend::StageSet(u32(stage.sw_stage)))); // SHD-002
-@@ -3967,7 +4049,9 @@
+@@ -3980,7 +4061,9 @@ void NativeRenderer::NoteWrites(const Targets* targets, const DrawBindings& b) {
  void NativeRenderer::Draw(bool is_indexed, u32 index_offset) {
      std::scoped_lock lock{mutex};
      const auto start = std::chrono::steady_clock::now();
@@ -183,7 +190,7 @@
      stats.timed_draws += t_timed ? 1 : 0;
      struct Timed {
          std::chrono::steady_clock::time_point start;
-@@ -4350,6 +4434,14 @@
+@@ -4363,6 +4446,14 @@ void NativeRenderer::Draw(bool is_indexed, u32 index_offset) {
              ++stats.passes_unblocked;
          }
      }
@@ -198,7 +205,7 @@
      {
          PhaseClock part{stats.record_ns[1]};
          BeginRendering(targets.state);
-@@ -4426,6 +4518,19 @@
+@@ -4439,6 +4530,19 @@ void NativeRenderer::Draw(bool is_indexed, u32 index_offset) {
              DrawOffsets(regs, vs_info, pipeline->GetFetchShader());
          const u32 instances = regs.num_instances.NumInstances();
          const auto* fs = pipeline->GetStages()[u32(Shader::SwStage::Fragment)];
@@ -218,7 +225,7 @@
          Native::GpuCheckpoints::Record(static_cast<VkCommandBuffer>(s.cmd), 1, frame,
              vs_info.pgm_hash, fs ? fs->pgm_hash : 0, regs.num_indices);
          if (quad_triangles) {
-@@ -4439,6 +4544,7 @@
+@@ -4452,6 +4556,7 @@ void NativeRenderer::Draw(bool is_indexed, u32 index_offset) {
          } else {
              cmdbuf.draw(regs.num_indices, instances, vertex_offset, instance_offset);
          }
@@ -226,18 +233,16 @@
      }
      {
          PhaseClock part{stats.record_ns[7]};
-@@ -5715,7 +5821,9 @@
+@@ -5734,6 +5839,8 @@ void NativeRenderer::DispatchDirect() {
                           .count();
          }
      } timed{start, stats.dispatch_ns};
--    t_timed = false; // OPT-001: the phase timers are the draws'
 +    SceneTrace::CpuScope scene_trace{r.FrameDumpCollecting(),frame,"dispatch"};
 +    if(SceneTrace::Id())r.FrameDumpEvent(fmt::format("scene-pass id={} kind=dispatch",SceneTrace::Id()));
-+    t_timed = false; // OPT-001: the phase timers are the draws'
+     t_timed = false; // OPT-001: the phase timers are the draws'
      r.scheduler.PopPendingOperations();
      const auto& cs_program = r.liverpool->DrawCsRegs();
-     const ComputePipeline* pipeline = r.AcquireComputePipeline();
-@@ -5743,6 +5851,17 @@
+@@ -5762,6 +5869,17 @@ void NativeRenderer::DispatchDirect() {
      ReadFillShader(pipeline->GetStage(Shader::SwStage::Compute), b); // NAT-120
      PrepareImages();
      GlobalBarrier();
@@ -255,7 +260,7 @@
      const CmdBuf cmdbuf{s.cmd};
      bool transferred = false;
      const auto& cs = pipeline->GetStage(Shader::SwStage::Compute);
-@@ -5784,6 +5903,8 @@
+@@ -5803,6 +5921,8 @@ void NativeRenderer::DispatchDirect() {
              cs.pgm_hash, cs_program.dim_x, u64(cs_program.dim_y) << 32 | cs_program.dim_z);
          cmdbuf.dispatch(cs_program.dim_x, cs_program.dim_y, cs_program.dim_z);
      }
@@ -264,7 +269,7 @@
      NoteWrites(nullptr, b);
      if (Native::g_dump_request.exchange(false)) {
          r.StartFrameDumpNow(); // FIX-156 (diagnosis): a watched fill
-@@ -5797,6 +5918,8 @@
+@@ -5816,6 +5936,8 @@ void NativeRenderer::DispatchDirect() {
  
  void NativeRenderer::DispatchIndirect(VAddr address, u32 offset, u32 size) {
      std::scoped_lock lock{mutex};
@@ -273,7 +278,7 @@
      t_timed = false; // OPT-001
      r.scheduler.PopPendingOperations();
      const ComputePipeline* pipeline = r.AcquireComputePipeline();
-@@ -5829,7 +5952,26 @@
+@@ -5848,7 +5970,26 @@ void NativeRenderer::DispatchIndirect(VAddr address, u32 offset, u32 size) {
          cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline->Handle());
      });
      PushBindings(*pipeline, vk::PipelineBindPoint::eCompute, b);
@@ -300,7 +305,7 @@
      NoteWrites(nullptr, b);
      s.buffers_written = true;
      ++stats.dispatches;
-@@ -6980,6 +7122,7 @@
+@@ -6999,6 +7140,7 @@ void NativeRenderer::DumpFrame(const std::filesystem::path& dir) {
          std::unique_ptr<Native::Rhi::Buffer> buffer;
          u64 size;
          u32 index;
@@ -308,7 +313,7 @@
      };
      std::vector<Readback> readbacks;
      Stream& s = Begin();
-@@ -7051,53 +7194,52 @@
+@@ -7070,53 +7212,52 @@ void NativeRenderer::DumpFrame(const std::filesystem::path& dir) {
              std::fclose(file);
          }
      }
@@ -403,7 +408,7 @@
          if (std::FILE* file = std::fopen(path.string().c_str(), "wb")) {
              std::fwrite(readback.buffer->Mapped(), 1, readback.size, file);
              std::fclose(file);
-@@ -7105,6 +7247,15 @@
+@@ -7124,6 +7265,15 @@ void NativeRenderer::DumpFrame(const std::filesystem::path& dir) {
      }
      LOG_WARNING(Render_Vulkan, "NAT-116: {} render targets and textures of the frame dumped to {}",
                  readbacks.size(), dir.string());
@@ -419,14 +424,3 @@
      dump_entries.clear();
      dump_textures.clear();
  }
---- a/ryty_gpu/RytyGpu.cmake
-+++ b/ryty_gpu/RytyGpu.cmake
-@@ -63,7 +63,7 @@
-         target_link_libraries(${target} PRIVATE mincore wbemuuid)
-         target_link_options(${target} PRIVATE /errorlimit:0)
-         # Line tables and a PDB, so crash and assertion stacks (module+offset) can be symbolized.
--        target_compile_options(${target} PRIVATE /clang:-gline-tables-only /Z7)
-+        target_compile_options(${target} PRIVATE /clang:-g /Z7)
-         target_link_options(${target} PRIVATE /DEBUG:FULL)
-         if (MSVC)
-             target_link_libraries(${target} PRIVATE clang_rt.builtins-x86_64.lib)

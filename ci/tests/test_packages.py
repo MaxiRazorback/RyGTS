@@ -58,6 +58,11 @@ class PackageTests(unittest.TestCase):
                     full_symbols=bool(suffix))))
                 if target == 'renderer':
                     (folder / 'CI-SOURCE.txt').write_text(pin['repository'] + '\n' + pin['commit'] + '\n')
+                    runtime_spec = json.loads((ROOT / 'ci/runtime/overlay.json').read_text())
+                    runtime_patch = ROOT / 'ci/runtime/production-source.patch'
+                    (folder / 'RUNTIME-SOURCE.json').write_text(json.dumps(dict(
+                        schema=1, renderer_commit=pin['commit'],
+                        overlay_sha256=pkg.sha(runtime_patch), source_files=runtime_spec['source_files'])))
                 if suffix:
                     pdb = folder / (Path(binary).stem + '.pdb')
                     pdb.write_bytes(b'Microsoft C/C++ MSF 7.00 fixture')
@@ -98,6 +103,8 @@ class PackageTests(unittest.TestCase):
                     self.assertEqual(info['commit'], SHA)
                     self.assertEqual(info['channel'], variant['channel'])
                     self.assertEqual(info['rebuilt'], ['RyGTS.exe', 'libs/libSceVideoOut.prx'])
+                    self.assertEqual(info['runtime_overlay']['renderer_commit'],
+                                     json.loads((ROOT / 'renderer/source.json').read_text())['commit'])
                     for line in z.read(prefix + 'SHA256SUMS.txt').decode().splitlines():
                         digest, name = line.split('  ', 1)
                         import hashlib
@@ -119,6 +126,20 @@ class PackageTests(unittest.TestCase):
                 if mutation != 'missing': self.rehash(folder)
                 with self.assertRaises((RuntimeError, FileNotFoundError)):
                     pkg.verify_bundle(folder, 'libSceVideoOut.prx', SHA, 'Diagnostics')
+
+    def test_runtime_overlay_provenance_must_match_pinned_patch(self):
+        with tempfile.TemporaryDirectory() as temp, contextlib.chdir(temp):
+            base = self.fixture()
+            folder = Path('artifacts/renderer')
+            overlay_path = folder / 'RUNTIME-SOURCE.json'
+            overlay = json.loads(overlay_path.read_text())
+            overlay['overlay_sha256'] = '0' * 64
+            overlay_path.write_text(json.dumps(overlay))
+            self.rehash(folder)
+            with patch.dict(os.environ, {'CI_COMMIT_SHA': SHA, 'RYGT_PACKAGE_BASE': str(base)}), \
+                    patch.object(pkg, 'BASE_SHA', pkg.sha(base)), \
+                    self.assertRaisesRegex(RuntimeError, 'Production renderer overlay provenance mismatch'):
+                pkg.package()
 
     def test_forbidden_runtime_content(self):
         bad = ('module.sprx', 'symbols.pdb', 'GTSport.exe', 'shaders/x.bin', 'saves/x.dat',
