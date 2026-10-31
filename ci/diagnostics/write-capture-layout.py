@@ -25,7 +25,18 @@ if len(choices)!=1 or choices.most_common()[0][1]<2:
  for m in re.finditer(b'\x0f\xb6',flipcode):
   modrm=flipcode[m.start()+2] if m.start()+2<len(flipcode) else None
   sites.append(dict(rva=flip+m.start(),bytes=flipcode[m.start():m.start()+12].hex(),modrm=modrm,mod=None if modrm is None else modrm>>6))
- raise AssertionError(dict(choices=choices,decoded=byte_loads,opcode_sites=sites[:64]))
+ magic=struct.unpack_from('<H',pe,hdr+24)[0]
+ image_base=struct.unpack_from('<Q' if magic==0x20b else '<I',pe,hdr+(24 if magic==0x20b else 28))[0]
+ objdump=Path(sys.argv[3])/'llvm-objdump.exe'
+ try:
+  disassembly=subprocess.check_output([str(objdump),'--disassemble','--demangle','--x86-asm-syntax=intel',f'--start-address=0x{image_base+flip:x}',f'--stop-address=0x{image_base+flip+8192:x}',str(root/'libSceVideoOut.prx')],text=True,stderr=subprocess.STDOUT,timeout=30)
+  disassembly=disassembly[:24000]
+ except Exception as exc:
+  disassembly=f'{type(exc).__name__}: {exc}'
+ report=dict(schema=1,reason='capture request load was not identified uniquely',rasterizer_rva=glob,frame_dump_flip_rva=flip,collecting_offset=collect,decoded_loads=byte_loads,opcode_sites=sites[:64],frame_dump_flip_bytes=flipcode[:8192].hex(),disassembly=disassembly)
+ debug_path=root/'capture-layout-debug.json'
+ debug_path.write_text(json.dumps(report,indent=2))
+ raise AssertionError(f'capture layout scan failed; see {debug_path.name}')
 request=next(iter(choices));reqpos,reqend=next((offset,end) for offset,end,displacement in byte_loads if displacement==request)
 guards=[dict(rva=start+cmps[0][0],bytes=code[cmps[0][0]:cmps[0][0]+7].hex()),dict(rva=flip+reqpos,bytes=flipcode[reqpos:reqend].hex())]
 entry=dict(rasterizer_rva=glob,collecting_offset=collect,done_offset=collect+1,native_offset=collect-8,request_offset=request,guards=guards)
