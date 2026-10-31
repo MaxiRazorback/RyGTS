@@ -56,3 +56,14 @@ def pdb_procedure_size(dump, name):
             if match:
                 sizes.append(int(match.group(1)))
     return max(sizes, default=0)
+
+
+def pe_image_base(pe, pe_offset):
+    """Read ImageBase using its offset within the PE optional header."""
+    optional = pe_offset + 24
+    magic = struct.unpack_from("<H", pe, optional)[0]
+    if magic == 0x20B:
+        return struct.unpack_from("<Q", pe, optional + 24)[0]
+    if magic == 0x10B:
+        return struct.unpack_from("<I", pe, optional + 28)[0]
+    raise ValueError(f"unsupported PE optional-header magic: {magic:#x}")

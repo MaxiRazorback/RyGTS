@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[1] / 'diagnostics'))
-from capture_layout import movzx_byte_loads, pdb_procedure_size
+from capture_layout import movzx_byte_loads, pdb_procedure_size, pe_image_base
 
 
 class CaptureLayoutTests(unittest.TestCase):
@@ -52,6 +52,16 @@ class CaptureLayoutTests(unittest.TestCase):
             "type = `void ()`, debug start = 4, debug end = 32\n"
         )
         self.assertEqual(pdb_procedure_size(dump, "FrameDumpFlip"), 7168)
+
+    def test_reads_pe32_and_pe32_plus_image_base_from_optional_header(self):
+        pe32_plus = bytearray(64)
+        pe32_plus[24:26] = (0x20B).to_bytes(2, 'little')
+        pe32_plus[48:56] = (0x140000000).to_bytes(8, 'little')
+        pe32 = bytearray(64)
+        pe32[24:26] = (0x10B).to_bytes(2, 'little')
+        pe32[52:56] = (0x400000).to_bytes(4, 'little')
+        self.assertEqual(pe_image_base(pe32_plus, 0), 0x140000000)
+        self.assertEqual(pe_image_base(pe32, 0), 0x400000)
 
 
 if __name__ == '__main__':

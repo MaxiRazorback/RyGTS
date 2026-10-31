@@ -1,7 +1,7 @@
 import sys,re,struct,hashlib,json,collections
 from pathlib import Path
 import subprocess
-from capture_layout import movzx_byte_loads,pdb_procedure_size
+from capture_layout import movzx_byte_loads,pdb_procedure_size,pe_image_base
 root=Path(sys.argv[1]);pe=(root/'libSceVideoOut.prx').read_bytes();hdr=struct.unpack_from('<I',pe,60)[0];sections=hdr+24+struct.unpack_from('<H',pe,hdr+20)[0]
 rows=[]
 for i in range(struct.unpack_from('<H',pe,hdr+6)[0]):
@@ -22,6 +22,7 @@ for i,line in enumerate(proc_lines):
  if 'FrameDumpFlip' in line:proc_context.extend(proc_lines[max(0,i-2):i+5])
 proc_context=list(dict.fromkeys(proc_context))
 flip_size=pdb_procedure_size(proc_dump,'FrameDumpFlip')
+print(f'FrameDumpFlip function size: {flip_size} bytes')
 code=pe[offset(start):offset(start)+70];cmps=[(m.start(),struct.unpack('<I',m[1])[0]) for m in re.finditer(b'\x80\xb9(.{4})\x00',code,re.S)]
 assert len(cmps)>=2 and cmps[0][1]+1==cmps[1][1],cmps
 collect=cmps[0][1];flipcode=pe[offset(flip):offset(flip)+flip_size] if 0<flip_size<=1048576 else b''
@@ -32,8 +33,7 @@ if len(choices)!=1 or choices.most_common()[0][1]<2:
  for m in re.finditer(b'\x0f\xb6',flipcode):
   modrm=flipcode[m.start()+2] if m.start()+2<len(flipcode) else None
   sites.append(dict(rva=flip+m.start(),bytes=flipcode[m.start():m.start()+12].hex(),modrm=modrm,mod=None if modrm is None else modrm>>6))
- magic=struct.unpack_from('<H',pe,hdr+24)[0]
- image_base=struct.unpack_from('<Q' if magic==0x20b else '<I',pe,hdr+(24 if magic==0x20b else 28))[0]
+ image_base=pe_image_base(pe,hdr)
  objdump=Path(sys.argv[3])/'llvm-objdump.exe'
  try:
   stop=flip+flip_size if 0<flip_size<=1048576 else flip+8192
