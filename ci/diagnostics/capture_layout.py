@@ -46,6 +46,24 @@ def movzx_byte_loads(code):
         i = max(end, start + 1)
 
 
+def indirect_atomic_byte_loads(code):
+    """Yield this+disp fields passed to a helper that returns a byte pointer.
+
+    The hosted Windows build can lower atomic<bool> conversion to LEA this+field,
+    CALL, MOVZX eax, byte ptr [rax], TEST al, 1. The LEA identifies the member;
+    requiring the full sequence twice prevents treating arbitrary address-taking
+    as the capture request field.
+    """
+    pattern = re.compile(
+        rb"\x49\x8d\x8c\x24(.{4})"  # lea rcx, [r12 + disp32]
+        rb"\xe8.{4}"                  # call helper
+        rb"\x0f\xb6\x00\xa8\x01",   # movzx eax, byte ptr [rax]; test al, 1
+        re.S,
+    )
+    for match in pattern.finditer(code):
+        yield match.start(), match.end(), struct.unpack("<i", match[1])[0]
+
+
 def pdb_procedure_ref(lines, name):
     """Return (zero_based_module_index, module_record_offset) for one PROCREF."""
     refs = []

@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[1] / 'diagnostics'))
-from capture_layout import movzx_byte_loads, pdb_procedure, pdb_procedure_ref, pe_image_base
+from capture_layout import indirect_atomic_byte_loads, movzx_byte_loads, pdb_procedure, pdb_procedure_ref, pe_image_base
 
 
 class CaptureLayoutTests(unittest.TestCase):
@@ -44,6 +44,16 @@ class CaptureLayoutTests(unittest.TestCase):
         code = (b'\x0f\xb6\x86\x50\x00\x00\x00'
                 b'\x48\x0f\xb6\x81\x50\x00\x00\x00')
         self.assertEqual([item[2] for item in movzx_byte_loads(code)], [0x50, 0x50])
+
+    def test_finds_repeated_indirect_atomic_byte_loads(self):
+        first = b'\x49\x8d\x8c\x24' + (0x13C38).to_bytes(4, 'little') + b'\xe8\x10\x20\x30\x40\x0f\xb6\x00\xa8\x01'
+        second = b'\x49\x8d\x8c\x24' + (0x13C38).to_bytes(4, 'little') + b'\xe8\x01\x02\x03\x04\x0f\xb6\x00\xa8\x01'
+        decoy = b'\x49\x8d\x8c\x24' + (0x13C38).to_bytes(4, 'little') + b'\xe8\x10\x20\x30\x40\x48\x85\xc0'
+        code = first + decoy + second
+        self.assertEqual(
+            list(indirect_atomic_byte_loads(code)),
+            [(0, len(first), 0x13C38), (len(first) + len(decoy), len(code), 0x13C38)],
+        )
 
     def test_reads_pdb_function_address_and_code_size_not_record_size(self):
         dump = (

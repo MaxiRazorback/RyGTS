@@ -1,7 +1,7 @@
 import sys,re,struct,hashlib,json,collections
 from pathlib import Path
 import subprocess
-from capture_layout import movzx_byte_loads,pdb_procedure,pdb_procedure_ref,pe_image_base
+from capture_layout import indirect_atomic_byte_loads,movzx_byte_loads,pdb_procedure,pdb_procedure_ref,pe_image_base
 root=Path(sys.argv[1]);pe=(root/'libSceVideoOut.prx').read_bytes();hdr=struct.unpack_from('<I',pe,60)[0];sections=hdr+24+struct.unpack_from('<H',pe,hdr+20)[0]
 rows=[]
 for i in range(struct.unpack_from('<H',pe,hdr+6)[0]):
@@ -32,7 +32,10 @@ code=pe[offset(start):offset(start)+70];cmps=[(m.start(),struct.unpack('<I',m[1]
 assert len(cmps)>=2 and cmps[0][1]+1==cmps[1][1],cmps
 collect=cmps[0][1];flipcode=pe[offset(flip):offset(flip)+flip_size] if 0<flip_size<=1048576 else b''
 byte_loads=list(movzx_byte_loads(flipcode))
-choices=collections.Counter(displacement for _,_,displacement in byte_loads if collect+32<displacement<collect+1024)
+indirect_loads=list(indirect_atomic_byte_loads(flipcode))
+loads=[(start,end,displacement,'movzx') for start,end,displacement in byte_loads]
+loads.extend((start,end,displacement,'indirect-atomic') for start,end,displacement in indirect_loads)
+choices=collections.Counter(displacement for _,_,displacement,_ in loads if collect+32<displacement<collect+1024)
 if len(choices)!=1 or choices.most_common()[0][1]<2:
  sites=[]
  for m in re.finditer(b'\x0f\xb6',flipcode):
@@ -48,11 +51,11 @@ if len(choices)!=1 or choices.most_common()[0][1]<2:
  except Exception as exc:
   disassembly=f'{type(exc).__name__}: {exc}'
   disassembly_truncated=False
- report=dict(schema=1,reason='capture request load was not identified uniquely',rasterizer_rva=glob,frame_dump_flip_rva=flip,frame_dump_flip_size=flip_size,frame_dump_flip_module_index=module_index,frame_dump_flip_record_offset=proc_record_offset,frame_dump_flip_pdb_records=proc_context,collecting_offset=collect,decoded_loads=byte_loads,opcode_sites=sites[:64],frame_dump_flip_bytes=flipcode[:16384].hex(),frame_dump_flip_bytes_truncated=len(flipcode)>16384,disassembly=disassembly,disassembly_truncated=disassembly_truncated)
+ report=dict(schema=1,reason='capture request load was not identified uniquely',rasterizer_rva=glob,frame_dump_flip_rva=flip,frame_dump_flip_size=flip_size,frame_dump_flip_module_index=module_index,frame_dump_flip_record_offset=proc_record_offset,frame_dump_flip_pdb_records=proc_context,collecting_offset=collect,decoded_loads=byte_loads,indirect_atomic_loads=indirect_loads,opcode_sites=sites[:64],frame_dump_flip_bytes=flipcode[:16384].hex(),frame_dump_flip_bytes_truncated=len(flipcode)>16384,disassembly=disassembly,disassembly_truncated=disassembly_truncated)
  debug_path=Path(sys.argv[2]).with_name('capture-layout-debug.json')
  debug_path.write_text(json.dumps(report,indent=2))
  raise AssertionError(f'capture layout scan failed; see {debug_path.name}')
-request=next(iter(choices));reqpos,reqend=next((offset,end) for offset,end,displacement in byte_loads if displacement==request)
+request=next(iter(choices));reqpos,reqend,_,reqkind=next(item for item in loads if item[2]==request)
 guards=[dict(rva=start+cmps[0][0],bytes=code[cmps[0][0]:cmps[0][0]+7].hex()),dict(rva=flip+reqpos,bytes=flipcode[reqpos:reqend].hex())]
 entry=dict(rasterizer_rva=glob,collecting_offset=collect,done_offset=collect+1,native_offset=collect-8,request_offset=request,guards=guards)
 p=Path(sys.argv[2]);manifest=json.loads(p.read_text()) if p.exists() else {};sha=hashlib.sha256(pe).hexdigest().upper();manifest[sha]=entry;p.write_text(json.dumps(manifest,indent=2));print(sha,entry)
