@@ -1,6 +1,6 @@
-# GT Sport on RyGT
+# GT Sport on RyGTS
 
-RyGT is Ryty with the changes GT Sport (CUSA03220, update 1.69) needs to run as a native Windows
+RyGTS is Ryty with the changes GT Sport (CUSA03220, update 1.69) needs to run as a native Windows
 program, together with shadGT's Vulkan renderer.
 
 - **This repository:** Ryty plus the GT Sport fixes (libkernel memory and event queues for the
@@ -18,9 +18,9 @@ program, together with shadGT's Vulkan renderer.
 
 ## Setup with the loader
 
-Unzip a release on the same drive as your game dump, run `RyGT.exe`, pick the game folder, the
+Unzip a release on the same drive as your game dump, run `RyGTS.exe`, pick the game folder, the
 1.69 update folder, a folder with your firmware's system modules and one with its fonts, then
-press **Set up** and **Play**. Set up also gives `GTSport.exe` the ryGT icon and makes it a Windows
+press **Set up** and **Play**. Set up also gives `GTSport.exe` the Gran Turismo Sport icon and makes it a Windows
 (GUI) program, so after that you can also open `GTSport.exe` directly: the runtime and renderer
 default to the settings GT Sport needs, and the game writes `stdout.log` and `stderr.log` itself.
 The loader's source is in [loader](../../loader) (build it with `loader/build.cmd`).
@@ -61,10 +61,10 @@ own decrypted dump of CUSA03220 with update 1.69 and your own firmware files.
    and the rest of the dump's root) and the converted `sce_module\*.guest.prx` in
    `app0\sce_module`.
 5. System fonts go in `sys\common\font` and `sys\common\font2`.
-6. Run `GTSport.exe` (`RyGT.exe --prepare GTSport.exe` gives it the icon and the Windows subsystem,
+6. Run `GTSport.exe` (`RyGTS.exe --prepare GTSport.exe` gives it the icon and the Windows subsystem,
    so no console window opens).
 
-The RyGT launcher has an **In-game user name** field. It saves your choice and passes it to the
+The RyGTS launcher has an **In-game user name** field. It saves your choice and passes it to the
 game when you press **Play**. Leaving it empty keeps the default name, `Player`. The runtime also
 accepts the `RYGT_USER_NAME` environment variable when the game is started directly.
 

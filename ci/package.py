@@ -96,7 +96,7 @@ def extract_runtime(base, stage):
             if lowered in copied:
                 raise RuntimeError('Duplicate package path')
             copied.add(lowered)
-            if lowered in {'build_info.txt', 'sha256sums.txt', 'readme.txt', 'rygt.exe', 'libs/libscevideoout.prx'}:
+            if lowered in {'build_info.txt', 'sha256sums.txt', 'readme.txt', 'rygt.exe', 'rygts.exe', 'libs/libscevideoout.prx'}:
                 continue
             target = stage / relative.as_posix()
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -106,7 +106,7 @@ def extract_runtime(base, stage):
 def assemble(base, commit, flavor, channel, suffix):
     launcher_folder = Path('artifacts/launcher' + suffix)
     renderer_folder = Path('artifacts/renderer' + suffix)
-    launcher = verify_bundle(launcher_folder, 'RyGT.exe', commit, flavor)
+    launcher = verify_bundle(launcher_folder, 'RyGTS.exe', commit, flavor)
     renderer = verify_bundle(renderer_folder, 'libSceVideoOut.prx', commit, flavor)
     root = Path(__file__).resolve().parent.parent
     pin = json.loads((root / 'renderer/source.json').read_text())
@@ -121,7 +121,7 @@ def assemble(base, commit, flavor, channel, suffix):
     stage.mkdir(parents=True, exist_ok=False)
     extract_runtime(base, stage)
     shutil.copy2(root / 'LICENSE', stage / 'LICENSE')
-    shutil.copy2(launcher, stage / 'RyGT.exe')
+    shutil.copy2(launcher, stage / 'RyGTS.exe')
     shutil.copy2(renderer, stage / 'libs/libSceVideoOut.prx')
     (stage / 'tools/amd').mkdir(parents=True, exist_ok=True)
     shutil.copy2(root / 'tools/amd/Add-To-AMD-Software.ps1', stage / 'tools/amd/Add-To-AMD-Software.ps1')
@@ -135,12 +135,12 @@ def assemble(base, commit, flavor, channel, suffix):
         configuration='RelWithDebInfo' if suffix else 'Release', optimized=True,
         pipeline=os.environ.get('CI_PIPELINE_URL'), runtime_base_url=BASE_URL, runtime_base_sha256=BASE_SHA,
         renderer_source=source, launcher_sha256=sha(launcher), renderer_sha256=sha(renderer),
-        rebuilt=['RyGT.exe', 'libs/libSceVideoOut.prx'],
+        rebuilt=['RyGTS.exe', 'libs/libSceVideoOut.prx'],
         retained='Other runtime libraries and Windows conversion helpers from pinned October 25 archive')
     if suffix:
         # PDBs are forbidden in the base. Only these explicitly verified same-build
         # symbols are admitted to debug-ci, adjacent to their matching modules.
-        for folder, pdb_name, target in ((launcher_folder, 'RyGT.pdb', 'RyGT.pdb'),
+        for folder, pdb_name, target in ((launcher_folder, 'RyGTS.pdb', 'RyGTS.pdb'),
                                         (renderer_folder, 'libSceVideoOut.pdb', 'libs/libSceVideoOut.pdb')):
             shutil.copy2(verify_artifact(folder, pdb_name, commit, 'pdb'), stage / target)
         tools = stage / 'tools/diagnostics'; tools.mkdir(parents=True)
@@ -157,7 +157,7 @@ def assemble(base, commit, flavor, channel, suffix):
         shutil.copy2(root / 'ci/diagnostics/DEBUG-README.txt', stage / 'README.txt')
     else:
         (stage / 'README.txt').write_text(
-            'RyGTS Release CI package (ci)\n\nRun RyGT.exe to set up your own decrypted GT Sport CUSA03220 v1.69 dump.\n'
+            'RyGTS Release CI package (ci)\n\nRun RyGTS.exe to set up your own decrypted GT Sport CUSA03220 v1.69 dump.\n'
             'Debug/Diagnostics is distributed separately as debug-ci.\n'
             'Game executable/data, firmware, saves, logs, caches and NVIDIA SDK DLLs are excluded.\n'
             'Supply required firmware modules and optional NVIDIA upscaler files yourself.\n'
@@ -165,7 +165,7 @@ def assemble(base, commit, flavor, channel, suffix):
             'and Windows conversion helpers come from the checksummed October 25 archive.\n'
             'This is a CI artifact, not a tagged release. See BUILD_INFO.txt and SHA256SUMS.txt.\n', encoding='utf-8')
     (stage / 'BUILD_INFO.txt').write_text(json.dumps(provenance, indent=2) + '\n', encoding='utf-8')
-    allowed_pdb = {'RyGT.pdb', 'libs/libSceVideoOut.pdb'} if suffix else set()
+    allowed_pdb = {'RyGTS.pdb', 'libs/libSceVideoOut.pdb'} if suffix else set()
     for file in stage.rglob('*'):
         if file.is_file() and file.suffix.lower() == '.pdb' and file.relative_to(stage).as_posix() not in allowed_pdb:
             raise RuntimeError('Unexpected packaged symbols')

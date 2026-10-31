@@ -1,11 +1,11 @@
-adcpatch - rewrites GT Sport (v1.69) AdHoc scripts for ryGT's offline features
+adcpatch - rewrites GT Sport (v1.69) AdHoc scripts for RyGTS's offline features
 
 Patched scripts go in <game folder>\patches\scripts\ (same file name as the game's); the renderer
 (GTS-005) serves them in place of the originals. Do not distribute the patched .ADC files: they are
 built from Polyphony's scripts. Inputs come from the game's volume (GTToolsSharp unpack).
 
   all <game folder> <update folder or ""> <scripts folder>
-      What RyGT.exe runs at Set up (and at Play when a script is missing): reads the five scripts
+      What RyGTS.exe runs at Set up (and at Play when a script is missing): reads the five scripts
       from the player's own gt.idx volumes (update first, then base), patches each one and writes
       them to <scripts folder>. The .ad files must sit next to adcpatch.exe. ADCPATCH_KEEP=1 keeps
       the extracted originals. Releases ship it published self-contained in toolsdcpatch\.

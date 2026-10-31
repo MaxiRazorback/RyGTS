@@ -48,7 +48,7 @@ class PackageTests(unittest.TestCase):
                                    'Vulkan': {'pipeline_cache_enabled': False}}))
         pin = json.loads((ROOT / 'renderer/source.json').read_text())
         for flavor, _, suffix in pkg.VARIANTS:
-            for target, binary in (('launcher', 'RyGT.exe'), ('renderer', 'libSceVideoOut.prx')):
+            for target, binary in (('launcher', 'RyGTS.exe'), ('renderer', 'libSceVideoOut.prx')):
                 folder = Path('artifacts/' + target + suffix)
                 folder.mkdir(parents=True)
                 (folder / binary).write_bytes(pe())
@@ -89,7 +89,7 @@ class PackageTests(unittest.TestCase):
                 with zipfile.ZipFile(archive) as z:
                     names = {n.removeprefix(prefix) for n in z.namelist()}
                     pdbs = {n for n in names if n.endswith('.pdb')}
-                    self.assertEqual(pdbs, {'RyGT.pdb', 'libs/libSceVideoOut.pdb'} if variant['channel'] == 'debug-ci' else set())
+                    self.assertEqual(pdbs, {'RyGTS.pdb', 'libs/libSceVideoOut.pdb'} if variant['channel'] == 'debug-ci' else set())
                     self.assertEqual('tools/diagnostics/Start-Capture.cmd' in names, bool(pdbs))
                     config = json.loads(z.read(prefix + 'user/custom_configs/CUSA03220.json'))
                     self.assertTrue(config['GPU']['precompile_shaders'])
@@ -97,7 +97,7 @@ class PackageTests(unittest.TestCase):
                     info = json.loads(z.read(prefix + 'BUILD_INFO.txt'))
                     self.assertEqual(info['commit'], SHA)
                     self.assertEqual(info['channel'], variant['channel'])
-                    self.assertEqual(info['rebuilt'], ['RyGT.exe', 'libs/libSceVideoOut.prx'])
+                    self.assertEqual(info['rebuilt'], ['RyGTS.exe', 'libs/libSceVideoOut.prx'])
                     for line in z.read(prefix + 'SHA256SUMS.txt').decode().splitlines():
                         digest, name = line.split('  ', 1)
                         import hashlib

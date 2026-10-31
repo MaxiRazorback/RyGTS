@@ -1,4 +1,4 @@
-// RyGT loader: the Controller ports window. Picks which connected controller is player 1 or 2
+// RyGTS launcher: the Controller ports window. Picks which connected controller is player 1 or 2
 // (GT Sport's splitscreen), each player's name (the PSN-style user name the game shows), and
 // shows a live preview of the chosen controller, like shadPS4.
 // Controllers are found and read through Windows' joystick API (winmm), and remembered by USB
@@ -441,7 +441,7 @@ namespace RyGT
             var parts = (current ?? "").Split(',');
             for (int i = 0; i < Players; ++i) chosen[i] = i < parts.Length ? parts[i].Trim() : "";
 
-            Text = "ryGT - Controller ports";
+            Text = "RyGTS - Controller ports";
             Font = new Font("Segoe UI", 9f);
             StartPosition = FormStartPosition.CenterParent;
             ClientSize = new Size(900, 540);

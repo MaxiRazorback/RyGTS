@@ -1,4 +1,4 @@
-"""Check out the exact renderer source revision used by this RyGT release."""
+"""Check out the exact renderer source revision used by this RyGTS release."""
 import argparse
 import json
 from pathlib import Path

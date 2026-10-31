@@ -1,7 +1,7 @@
-# ryGT DLSS plugin
+# RyGTS DLSS plugin
 
-An optional plugin for NVIDIA DLSS reconstruction in ryGT.
-It is not part of the ryGT release: NVIDIA's DLSS SDK can't be linked into the GPL renderer, so
+An optional plugin for NVIDIA DLSS reconstruction in RyGTS.
+It is not part of the RyGTS release: NVIDIA's DLSS SDK can't be linked into the GPL renderer, so
 DLSS lives in this separate MIT-licensed DLL, and you build and install it yourself.
 
 ## What it does
@@ -52,7 +52,7 @@ Next to `GTSport.exe`, make a `dlss` folder holding:
 - `ryGT_dlss.dll` from the build;
 - `nvngx_dlss.dll` from NVIDIA's DLSS SDK (`lib\Windows_x86_64\rel`) or another DLSS release.
 
-Use "Add DLSS file..." in `RyGT.exe` to import `nvngx_dlss.dll` while the game is closed. The
+Use "Add DLSS file..." in `RyGTS.exe` to import `nvngx_dlss.dll` while the game is closed. The
 previous runtime is kept in a timestamped `.bak` file. This imports only the NVIDIA runtime;
 `ryGT_dlss.dll` must already be installed separately.
 

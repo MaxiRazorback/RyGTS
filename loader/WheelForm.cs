@@ -1,4 +1,4 @@
-// RyGT loader: the steering wheel and pedal mapping window.
+// RyGTS launcher: the steering wheel and pedal mapping window.
 // It edits ryty-input.ini (the wheel lines: JOYAXIS / JOYBUTTON / JOYHAT) and ryty-wheel.ini,
 // which libScePad reads, and keeps every other line of both files as it is. Live wheel state
 // comes from tools\ryty-wheel-probe.exe, which reads joysticks the same way libScePad does, so
@@ -97,7 +97,7 @@ namespace RyGT
             probePath = Path.Combine(root, "tools", "ryty-wheel-probe.exe");
             if (!File.Exists(probePath)) probePath = Path.Combine(root, "ryty-wheel-probe.exe");
 
-            Text = "ryGT - Steering wheel";
+            Text = "RyGTS - Steering wheel";
             Font = new Font("Segoe UI", 9f);
             StartPosition = FormStartPosition.CenterParent;
             ClientSize = new Size(800, 840);
@@ -565,13 +565,14 @@ namespace RyGT
                     string source;
                     ActionOf(line, out source);
                     if (IsJoystickSource(source)) continue;
-                    if (line.Trim() == "# Racing wheel (written by the RyGT launcher)") continue;
+                    if (line.Trim() == "# Racing wheel (written by the RyGT launcher)" ||
+                        line.Trim() == "# Racing wheel (written by the RyGTS launcher)") continue;
                     kept.Add(line);
                 }
             }
             while (kept.Count > 0 && kept[kept.Count - 1].Trim().Length == 0) kept.RemoveAt(kept.Count - 1);
             if (kept.Count > 0) kept.Add("");
-            kept.Add("# Racing wheel (written by the RyGT launcher)");
+            kept.Add("# Racing wheel (written by the RyGTS launcher)");
             foreach (var row in Rows)
             {
                 if (row.Source == null) continue;
@@ -593,7 +594,7 @@ namespace RyGT
                 { "PadIsWheel", gameWheelMode.Checked ? "1" : "0" },
                 { "Present", PresentIds[Math.Max(0, presentAs.SelectedIndex)] },
             };
-            var lines = File.Exists(wheelPath) ? File.ReadAllLines(wheelPath).ToList() : new List<string> { "# Racing wheel settings for RyGT (also editable in the launcher)." };
+            var lines = File.Exists(wheelPath) ? File.ReadAllLines(wheelPath).ToList() : new List<string> { "# Racing wheel settings for RyGTS (also editable in the launcher)." };
             var written = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             for (int i = 0; i < lines.Count; ++i)
             {

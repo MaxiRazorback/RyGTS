@@ -15,6 +15,11 @@ using System.Text;
 using System.Threading;
 using System.Windows.Forms;
 
+[assembly: System.Reflection.AssemblyCompany("RyGTS")]
+[assembly: System.Reflection.AssemblyProduct("RyGTS")]
+[assembly: System.Reflection.AssemblyTitle("RyGTS Launcher")]
+[assembly: System.Reflection.AssemblyDescription("Gran Turismo Sport launcher for Windows")]
+
 namespace RyGT
 {
     static class Native
@@ -141,7 +146,7 @@ namespace RyGT
             string script = Path.Combine(Path.GetTempPath(), name + ".sh");
             string done = Path.Combine(Path.GetTempPath(), name + ".done");
             var text = new StringBuilder();
-            text.Append("#!/bin/sh\n# Written by RyGT.exe: links the game's files under Wine.\n");
+            text.Append("#!/bin/sh\n# Written by RyGTS.exe: links the game's files under Wine.\n");
             text.Append("PATH=/usr/local/bin:/usr/bin:/bin\n");
             text.Append("link() { if [ -L \"$2\" ] || [ ! -e \"$2\" ]; then ln -sfn \"$1\" \"$2\"; fi; }\n");
             foreach (var pair in links)
@@ -527,7 +532,7 @@ namespace RyGT
         }
     }
 
-    /// The big rounded banner: the launcher picture (launcher\background.png next to RyGT.exe),
+    /// The big rounded banner: the launcher picture (launcher\background.png next to RyGTS.exe),
     /// darkened on the left and at the bottom, where the title and the Play button sit.
     class Hero : Panel
     {
@@ -785,7 +790,7 @@ namespace RyGT
         }
     }
 
-    /// Finishes the converted GTSport.exe: the launcher's icon (RyGT.exe's embedded copy of ryGT.ico),
+    /// Finishes the converted GTSport.exe: the launcher's icon (RyGTS.exe's embedded copy of ryGT.ico),
     /// so Explorer and shortcuts show the game's art instead of a blank program icon, and the Windows
     /// (GUI) subsystem, so a double-click opens only the game window, without a console.
     static class GameExe
@@ -826,9 +831,11 @@ namespace RyGT
 
         public static void ApplyVersionInfo(string exe)
         {
-            if (Wine.Detected || HasResource(exe, RtVersion)) return;
+            if (Wine.Detected) return;
+            if (HasResource(exe, RtVersion) &&
+                !String.Equals(FileVersionInfo.GetVersionInfo(exe).CompanyName, "RyGT", StringComparison.Ordinal)) return;
             byte[] data = VersionInfo(new[] {
-                new[] { "CompanyName", "RyGT" },
+                new[] { "CompanyName", "RyGTS" },
                 new[] { "FileDescription", "Gran Turismo Sport" },
                 new[] { "FileVersion", "1.69" },
                 new[] { "InternalName", "GTSport" },
@@ -933,7 +940,7 @@ namespace RyGT
             byte[] ico;
             using (var stream = typeof(GameExe).Assembly.GetManifestResourceStream("ryGT.ico"))
             {
-                if (stream == null) throw new Exception("RyGT.exe has no embedded icon.");
+                if (stream == null) throw new Exception("RyGTS.exe has no embedded icon.");
                 ico = new byte[stream.Length];
                 stream.Read(ico, 0, ico.Length);
             }
@@ -1085,7 +1092,7 @@ namespace RyGT
         static readonly string[] FirmwareModules = { "libSceFont", "libSceFontFt", "libSceFreeTypeOt", "libSceJson2", "libSceNgs2", "libSceBluetoothHid" };
         // Used when present: the JPEG decoder (Scapes thumbnails and backgrounds) and PNG encoder (photos).
         // Both are plain software modules needing only libkernel and libSceLibcInternal.
-        // Other firmware modules GT Sport imports stay RyGT's stubs in libs: some, such as
+        // Other firmware modules GT Sport imports stay RyGTS's stubs in libs: some, such as
         // libSceOttvCapture, need modules nothing provides and make GTSport.exe fail at startup.
         static readonly string[] OptionalFirmwareModules = { "libSceJpegDec", "libScePngEnc" };
 
@@ -1101,7 +1108,7 @@ namespace RyGT
         public LoaderForm()
         {
             settings = new Settings(Path.Combine(root, "RyGT.ini"));
-            Text = "ryGT - Gran Turismo Sport";
+            Text = "RyGTS - Gran Turismo Sport";
             try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
             Font = new Font("Segoe UI", 9f);
             ClientSize = new Size(1280, 800);
@@ -1114,7 +1121,7 @@ namespace RyGT
             var logo = new PictureBox { Size = new Size(30, 30), SizeMode = PictureBoxSizeMode.Zoom, Margin = new Padding(0, 0, 8, 0) };
             try { logo.Image = new Icon(Icon, 32, 32).ToBitmap(); } catch { }
             top.Controls.Add(logo);
-            top.Controls.Add(new Label { Text = "ryGT", AutoSize = true, Font = new Font("Segoe UI Semibold", 14f), Margin = new Padding(0, 1, 28, 0) });
+            top.Controls.Add(new Label { Text = "RyGTS", AutoSize = true, Font = new Font("Segoe UI Semibold", 14f), Margin = new Padding(0, 1, 28, 0) });
             var tabNames = new[] { "Home", "Settings", "Controls" };
             for (int i = 0; i < tabs.Length; ++i)
             {
@@ -1137,7 +1144,7 @@ namespace RyGT
             footer.Controls.Add(status, 0, 0);
             footer.Controls.Add(new Label
             {
-                Text = "ryGT for Windows " + (char)183 + " GT Sport 1.69", AutoSize = true, Anchor = AnchorStyles.Right, ForeColor = Dark.AccentText,
+                Text = "RyGTS for Windows " + (char)183 + " GT Sport 1.69", AutoSize = true, Anchor = AnchorStyles.Right, ForeColor = Dark.AccentText,
                 Tag = "heading", Font = new Font("Segoe UI Semibold", 8.5f), Margin = new Padding(0)
             }, 1, 0);
 
@@ -1176,7 +1183,7 @@ namespace RyGT
             home.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             pages[0].Controls.Add(home);
 
-            // The background picture (launcher\background.png next to RyGT.exe) fills the banner.
+            // The background picture (launcher\background.png next to RyGTS.exe) fills the banner.
             var hero = new Hero(background) { Dock = DockStyle.Fill, Margin = new Padding(0, 0, 0, 14) };
             home.Controls.Add(hero, 0, 0);
             var heroText = new FlowLayoutPanel
@@ -1647,7 +1654,7 @@ namespace RyGT
             side.Controls.Add(Item("Shaders", "Precompiling and compile pauses", "S", Badges[5], delegate { ShowPage(1); }));
             side.Controls.Add(GroupLabel("Game"));
             side.Controls.Add(Item("Set up", "Convert the game from your dump", "U", Badges[6], delegate { if (setup.Enabled) StartSetup(); }));
-            side.Controls.Add(Item("Open folder", "The RyGT folder in Explorer", "F", Badges[7], OpenFolder));
+            side.Controls.Add(Item("Open folder", "The RyGTS folder in Explorer", "F", Badges[7], OpenFolder));
 
             foreach (var column in new[] { settingsPage, controlsPage, side }) Stack(column);
             ShowPage(0);
@@ -2441,7 +2448,7 @@ namespace RyGT
             status.Text = text;
         }
 
-        /// RyGT.exe --setup: the same set up without the window, from the folders in RyGT.ini.
+        /// RyGTS.exe --setup: the same set up without the window, from the folders in RyGT.ini.
         public int SetupWithoutWindow()
         {
             try { setupLogPath = LogFiles.Prepare(root, "setup.log"); RunSetup(); return 0; }
@@ -2549,7 +2556,7 @@ namespace RyGT
             // 2. Convert.
             SetStatus("Converting the game for Windows (this takes a while)...");
             string converter = Path.Combine(root, "converter", "ryty.exe");
-            if (!File.Exists(converter)) throw new Exception("converter\\ryty.exe is missing from the RyGT folder.");
+            if (!File.Exists(converter)) throw new Exception("converter\\ryty.exe is missing from the RyGTS folder.");
             string staging = Path.Combine(work, "game-rebuild");
             string stagedExe = Path.Combine(staging, "GTSport.exe");
             string stagedModules = Path.Combine(staging, "app0", "sce_module");
@@ -2567,7 +2574,7 @@ namespace RyGT
             if (File.Exists(registry)) File.Copy(registry, Path.Combine(root, "GTSport.registry.json"), true);
             if (File.Exists(Exe)) File.Replace(stagedExe, Exe, null);
             else File.Move(stagedExe, Exe);
-            Log(Wine.Detected ? "Made GTSport.exe a Windows program." : "Gave GTSport.exe the ryGT icon and made it a Windows program.");
+            Log(Wine.Detected ? "Made GTSport.exe a Windows program." : "Gave GTSport.exe the Gran Turismo Sport icon and made it a Windows program.");
 
             // 3. app0: the game's files, the update's over the base game's, linked rather than copied.
             SetStatus("Linking the game files...");
@@ -2867,7 +2874,7 @@ namespace RyGT
                 if (Native.CreateHardLink(target, pair.Value, IntPtr.Zero)) { linked++; hard++; continue; }
                 if (Wine.Detected) { unixLinks[target] = pair.Value; continue; }
                 if (Native.CreateSymbolicLink(target, pair.Value, 2)) { linked++; symbolic++; continue; } // needs Developer Mode
-                throw new Exception("Could not link " + pair.Value + ". Put the RyGT folder on the same drive as the game, " +
+                throw new Exception("Could not link " + pair.Value + ". Put the RyGTS folder on the same drive as the game, " +
                                     "or turn on Developer Mode in Windows settings.");
             }
             if (Wine.Detected)
@@ -2897,7 +2904,7 @@ namespace RyGT
                 string problem = ReadProblem(Path.Combine(app0, pair.Key), new FileInfo(pair.Value).Length);
                 if (problem != null)
                     throw new Exception("app0\\" + pair.Key + " " + problem + " after linking it to " + pair.Value +
-                                        ". Put the RyGT folder on the same drive as the game and press Set up again.");
+                                        ". Put the RyGTS folder on the same drive as the game and press Set up again.");
             }
             Log("Linked " + linked + " game files (" + hard + " hard links, " + symbolic + " symbolic links) and " +
                 dirs.Count + " folders into app0.");
@@ -2929,7 +2936,7 @@ namespace RyGT
                 CopyDirectory(dir, Path.Combine(destination, Path.GetFileName(dir)));
         }
 
-        // Everything RyGT makes stays in the RyGT folder (portable), and the shaders are in plain sight
+        // Everything RyGTS makes stays in the RyGTS folder (portable), and the shaders are in plain sight
         // in <RyGT>\shaders (the renderer's cache folder), never in AppData. Older folders kept them in
         // user\cache: a real folder there is moved to shaders once. Builds from 2026-10-18 to 10-20
         // made user\cache a link to one AppData folder shared by every RyGT folder; its shaders are
@@ -3037,7 +3044,7 @@ namespace RyGT
             if (dataProblem != null)
             {
                 MessageBox.Show(this, "GT Sport's data index app0\\gt.idx " + dataProblem + ", so the game can't start.\n\n" +
-                                "Press Set up again. If the RyGT folder is on a different drive than the game, move it " +
+                                "Press Set up again. If the RyGTS folder is on a different drive than the game, move it " +
                                 "to the game's drive first.");
                 return;
             }
@@ -3066,7 +3073,7 @@ namespace RyGT
                         !ReadSetting("Vulkan", "pipeline_cache_enabled", true))
                         WriteSetting("Vulkan", "pipeline_cache_enabled", true);
                     EnsureShaderCacheIdentity();
-                    // Folders set up by an earlier RyGT.exe or adcpatch get the offline livery scripts
+                    // Folders set up by an earlier RyGTS.exe or adcpatch get the offline livery scripts
                     // (again) now (a few seconds).
                     if (GameScriptsOutdated() && Directory.Exists(gameDir))
                     {
@@ -3107,7 +3114,9 @@ namespace RyGT
         static void StartGame(string root, bool hddStreaming, Size? sceneSize)
         {
             string exe = Path.Combine(root, "GTSport.exe");
-            // Folders set up by an earlier RyGT.exe get the icon and the Windows subsystem now.
+            // Preserve GT Sport metadata while migrating the launcher publisher field from older installs.
+            try { GameExe.ApplyVersionInfo(exe); } catch (Exception e) { AppendSetupLog(root, "Could not update game publisher metadata: " + e.Message); }
+            // Folders set up by an earlier RyGT launcher get the icon and Windows subsystem now.
             try { if (!GameExe.IsPrepared(exe)) GameExe.Prepare(exe); } catch { }
             ThreadPool.QueueUserWorkItem(delegate { AmdSoftware.EnsureGameEntry(root, exe); });
             ThreadPool.QueueUserWorkItem(delegate
@@ -3232,9 +3241,9 @@ namespace RyGT
                 catch (AbandonedMutexException) { owns = true; }
                 if (!owns)
                 {
-                    MessageBox.Show("RyGT Launcher is already running.\n\n" +
-                        "Please close the existing launcher, then open RyGT Launcher again.",
-                        "RyGT Launcher", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    MessageBox.Show("RyGTS Launcher is already running.\n\n" +
+                        "Please close the existing launcher, then open RyGTS Launcher again.",
+                        "RyGTS Launcher", MessageBoxButtons.OK, MessageBoxIcon.Error);
                     return 2;
                 }
                 try { return RunLauncher(args); }
@@ -3247,7 +3256,7 @@ namespace RyGT
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             // Portable: the tools' work folders (and anything else asking for a temporary folder) go
-            // into the RyGT folder instead of AppData\Local\Temp; the tools delete theirs when done.
+            // into the RyGTS folder instead of AppData\Local\Temp; the tools delete theirs when done.
             try
             {
                 string temp = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "temp");

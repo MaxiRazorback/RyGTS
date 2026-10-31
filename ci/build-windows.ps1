@@ -11,7 +11,7 @@ $out = Join-Path (Get-Location) ("artifacts/" + $Target.ToLowerInvariant() + $su
 New-Item -ItemType Directory -Force $out | Out-Null
 if ($Target -eq 'Launcher') {
     Invoke-Checked 'cmd.exe' @('/d','/c', 'loader\build.cmd', $out, $Flavor)
-    if (!(Test-Path "$out/RyGT.exe")) { throw 'Launcher output missing' }
+    if (!(Test-Path "$out/RyGTS.exe")) { throw 'Launcher output missing' }
 } else {
     if (!$env:LLVM_ROOT) { throw 'Set LLVM_ROOT to the LLVM 23.1.3 distribution (see docs/dev/CI.md)' }
     $llvm = (Resolve-Path $env:LLVM_ROOT).Path
@@ -53,7 +53,7 @@ if ($Target -eq 'Launcher') {
 }
 if ($Flavor -eq 'Diagnostics') {
     if (!$env:LLVM_ROOT) { throw 'LLVM_ROOT required to verify diagnostics symbols' }
-    $name = if ($Target -eq 'Launcher') { 'RyGT' } else { 'libSceVideoOut' }
+    $name = if ($Target -eq 'Launcher') { 'RyGTS' } else { 'libSceVideoOut' }
     $extension = if ($Target -eq 'Launcher') { 'exe' } else { 'prx' }
     Invoke-Checked 'python' @('ci/diagnostics/verify-symbols.py', "$out/$name.$extension", "$out/$name.pdb", "$env:LLVM_ROOT/bin", "$out/SYMBOLS.json")
 }

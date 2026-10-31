@@ -59,7 +59,7 @@ class RegistryTests(unittest.TestCase):
     def prepare_packages(self, folder):
         variants = []
         for channel in ci.CHANNELS:
-            name = f'RyGT-{channel}-{SHA[:8]}.zip'
+            name = f'RyGTS-{channel}-{SHA[:8]}.zip'
             payload = ('test package ' + channel).encode()
             digest = hashlib.sha256(payload).hexdigest()
             (folder / name).write_bytes(payload)
@@ -95,7 +95,7 @@ class RegistryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp, contextlib.chdir(temp):
             folder = Path('source/dist'); folder.mkdir(parents=True)
             self.prepare_packages(folder)
-            (folder / f'RyGT-debug-ci-{SHA[:8]}.zip').write_bytes(b'corrupt')
+            (folder / f'RyGTS-debug-ci-{SHA[:8]}.zip').write_bytes(b'corrupt')
             with patch.dict(os.environ, {'SOURCE_SHA': SHA}), patch.object(ci.urllib.request, 'urlopen') as api:
                 with self.assertRaisesRegex(RuntimeError, 'checksum'):
                     ci.publish()
