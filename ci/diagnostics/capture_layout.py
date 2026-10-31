@@ -1,4 +1,5 @@
 """Small x64 instruction decoder for byte-load offsets used by frame capture."""
+import re
 import struct
 
 
@@ -43,3 +44,15 @@ def movzx_byte_loads(code):
             displacement = 0
         yield start, end, displacement
         i = max(end, start + 1)
+
+
+def pdb_procedure_size(dump, name):
+    """Read the CodeView procedure code size for a named PDB symbol."""
+    lines = dump.splitlines()
+    sizes = []
+    for i, line in enumerate(lines):
+        if name in line:
+            match = re.search(r"code size\s*=\s*(\d+)", "\n".join(lines[i:i + 3]))
+            if match:
+                sizes.append(int(match.group(1)))
+    return max(sizes, default=0)

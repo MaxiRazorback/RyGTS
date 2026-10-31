@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[1] / 'diagnostics'))
-from capture_layout import movzx_byte_loads
+from capture_layout import movzx_byte_loads, pdb_procedure_size
 
 
 class CaptureLayoutTests(unittest.TestCase):
@@ -44,6 +44,14 @@ class CaptureLayoutTests(unittest.TestCase):
         code = (b'\x0f\xb6\x86\x50\x00\x00\x00'
                 b'\x48\x0f\xb6\x81\x50\x00\x00\x00')
         self.assertEqual([item[2] for item in movzx_byte_loads(code)], [0x50, 0x50])
+
+    def test_reads_pdb_function_code_size_not_record_size(self):
+        dump = (
+            "12 | S_GPROC32 [size = 44] `?FrameDumpFlip@Rasterizer@Vulkan@@`\n"
+            "parent = 0, end = 192, addr = 0001:1000, code size = 7168\n"
+            "type = `void ()`, debug start = 4, debug end = 32\n"
+        )
+        self.assertEqual(pdb_procedure_size(dump, "FrameDumpFlip"), 7168)
 
 
 if __name__ == '__main__':
