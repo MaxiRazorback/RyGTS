@@ -83,11 +83,11 @@
     },
     "src/video_core/renderer_vulkan/shared_pipeline_policy.h": {
       "baseline_sha256": null,
-      "new_sha256": "dd1a45f09a0824b5625223e72b0de1cc4d9e9ce35e77c19ed8ff1034ecb6884e"
+      "new_sha256": "f427a42ff0f91d38d3ae6d9e1ad420291edc7698f3a4f6ea17125d171f4e3bd6"
     },
     "src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp": {
       "baseline_sha256": "084cbdcf757c9901deadf10221bd5d8e622113bb445530c795b4ff47a6927b3b",
-      "new_sha256": "c6c051c4d5536602bc4636df30c321fa9de1466549a653708f5885f57d5332a5"
+      "new_sha256": "fe8809402f537792228652733d6463fee99db2dc40a1d5b15c602d50fd4f59ba"
     },
     "src/video_core/renderer_vulkan/vk_pipeline_cache.cpp": {
       "baseline_sha256": "9c3032aebfbd5b317920046ea40e3db10222183a98c958f7041ab77f4d7c982e",
