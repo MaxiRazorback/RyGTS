@@ -1051,10 +1051,10 @@ index 0000000..22d652e
 +}
 diff --git a/b/src/video_core/renderer_vulkan/shared_pipeline_policy.h b/src/video_core/renderer_vulkan/shared_pipeline_policy.h
 new file mode 100644
-index 0000000..eb4dc33
+index 0000000..d58719b
 --- /dev/null
 +++ b/src/video_core/renderer_vulkan/shared_pipeline_policy.h
-@@ -0,0 +1,54 @@
+@@ -0,0 +1,52 @@
 +#pragma once
 +#include <cstdlib>
 +namespace Vulkan {
@@ -1068,9 +1068,10 @@ index 0000000..eb4dc33
 +    return enabled && !lto;
 +}
 +// AMD-320: the same libraries and fast link as above, but AMD's compiler gets its optimizer
-+// back. Fast-linked, unoptimized pipelines cost AMD far more GPU time than NVIDIA, so
-+// tessellated libraries are compiled optimized and ordinary pipelines are linked again with
-+// link-time optimization on the workers. RYGT_AMD_PIPELINE_POLICY=0 uses the shared policy.
++// back for tessellated libraries. AMD-322: no link-time data and no second, optimized link:
++// on an RX 7600 they made each menu pipeline take 0.4-0.7 s and filled pipeline memory
++// (4.4 GB, then trimming and rebuilding pipelines in a loop). RYGT_AMD_PIPELINE_POLICY=0
++// uses the shared policy.
 +inline bool AmdPipelinePolicyEnabled(unsigned vendor_id) {
 +    static const bool allowed = [] {
 +        const char* env=std::getenv("RYGT_AMD_PIPELINE_POLICY");
@@ -1100,17 +1101,14 @@ index 0000000..eb4dc33
 +        return {libraries, tessellated,
 +                libraries && !tessellated && !emulated_tessellation && optimize};
 +    }
-+    // AMD-320: optimizer kept; tessellation still retains no link-time data (FIX-057 memory).
-+    static constexpr SharedPipelinePolicy SelectAmd(bool supported, bool force_whole,
-+                                                    bool tessellated,
-+                                                    bool emulated_tessellation = false) {
-+        const bool libraries = supported && !force_whole;
-+        return {libraries, false, libraries && !tessellated && !emulated_tessellation};
++    // AMD-320/322: optimizer kept, and no pipeline keeps link-time data.
++    static constexpr SharedPipelinePolicy SelectAmd(bool supported, bool force_whole) {
++        return {supported && !force_whole, false, false};
 +    }
 +};
 +}
 diff --git a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
-index f588a39..62e0f71 100644
+index f588a39..6d5df7c 100644
 --- a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
 +++ b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
 @@ -30,6 +30,9 @@
@@ -1259,7 +1257,7 @@ index f588a39..62e0f71 100644
      const vk::GraphicsPipelineCreateInfo pipeline_info = {
          .pNext = &pipeline_rendering_ci,
          .flags = tessellated && plain_tessellated ? vk::PipelineCreateFlagBits::eDisableOptimization
-@@ -817,29 +792,27 @@ GraphicsPipeline::GraphicsPipeline(
+@@ -817,29 +792,26 @@ GraphicsPipeline::GraphicsPipeline(
      // Stored ordinary pipelines use the same shared stage libraries and fast link as draws.
      // Whole-pipeline prewarm recompiles both stages for every target/blend permutation and
      // does not populate the stage-library cache used when new runtime permutations appear.
@@ -1284,8 +1282,7 @@ index f588a39..62e0f71 100644
 +    const auto compile_policy = amd_policy
 +        ? SharedPipelinePolicy::SelectAmd(
 +              SharedPipelineLibrariesEnabled(instance.IsGraphicsPipelineLibrarySupported(),preloading),
-+              tessellated && !Mr14SharedTessellationEnabled(false), tessellated,
-+              is_rect_list || is_quad_list)
++              tessellated && !Mr14SharedTessellationEnabled(false))
 +        : SharedPipelinePolicy::Select(
 +              SharedPipelineLibrariesEnabled(instance.IsGraphicsPipelineLibrarySupported(),preloading),
 +              tessellated && !Mr14SharedTessellationEnabled(LinkTimeOptimization()),
@@ -1305,7 +1302,7 @@ index f588a39..62e0f71 100644
          library_link = std::make_unique<LibraryLink>();
          boost::container::static_vector<vk::PipelineShaderStageCreateInfo, MaxShaderStages>
              pre_raster_stages;
-@@ -893,8 +866,8 @@ GraphicsPipeline::GraphicsPipeline(
+@@ -893,8 +865,8 @@ GraphicsPipeline::GraphicsPipeline(
              auto& part_info = part_infos[i];
              part_info = pipeline_info;
              part_info.pNext = &library_infos[i];
@@ -1316,7 +1313,7 @@ index f588a39..62e0f71 100644
                  part_info.flags |= vk::PipelineCreateFlagBits::eRetainLinkTimeOptimizationInfoEXT;
              }
              part_info.stageCount = 0;
-@@ -910,6 +883,9 @@ GraphicsPipeline::GraphicsPipeline(
+@@ -910,6 +882,9 @@ GraphicsPipeline::GraphicsPipeline(
              }
          }
          const auto create_library = [&](size_t i) {
@@ -1326,7 +1323,7 @@ index f588a39..62e0f71 100644
              BuildWatch part_watch{debug_str, i == 1 ? "pre-raster library"
                                               : i == 2 ? "fragment library"
                                                        : "interface library"};
-@@ -924,6 +900,8 @@ GraphicsPipeline::GraphicsPipeline(
+@@ -924,6 +899,8 @@ GraphicsPipeline::GraphicsPipeline(
          // PERF-018: the shader libraries are keyed by everything their create info reads: the
          // layout's bindings, the stage modules, and the state of their pipeline subset.
          LibraryKey pre_raster_key{1};
@@ -1335,7 +1332,7 @@ index f588a39..62e0f71 100644
          // SHD-002: the sets of the pre-rasterization stages only.
          for (u32 set = 0; set < num_sets; ++set) {
              if (set != Shader::Backend::StageSet(u32(Shader::SwStage::Fragment))) {
-@@ -946,20 +924,15 @@ GraphicsPipeline::GraphicsPipeline(
+@@ -946,20 +923,15 @@ GraphicsPipeline::GraphicsPipeline(
          }
  
          LibraryKey fragment_key{2};
@@ -1360,7 +1357,7 @@ index f588a39..62e0f71 100644
          fragment_key.Add(pipeline_rendering_ci.viewMask);
          for (const auto state : dynamic_states) {
              fragment_key.Add(state);
-@@ -974,25 +947,31 @@ GraphicsPipeline::GraphicsPipeline(
+@@ -974,25 +946,31 @@ GraphicsPipeline::GraphicsPipeline(
          auto fragment_owner = share_libraries ? library_cache.Find(device, fragment_hash) : nullptr;
          vk::Pipeline pre_raster_library = pre_raster_owner ? **pre_raster_owner : vk::Pipeline{};
          vk::Pipeline fragment_library = fragment_owner ? **fragment_owner : vk::Pipeline{};
@@ -1400,7 +1397,7 @@ index f588a39..62e0f71 100644
          library_link->shared_libraries = {pre_raster_owner, fragment_owner};
          library_handles[1] = pre_raster_library;
          library_handles[2] = fragment_library;
-@@ -1006,6 +985,7 @@ GraphicsPipeline::GraphicsPipeline(
+@@ -1006,6 +984,7 @@ GraphicsPipeline::GraphicsPipeline(
          };
          const vk::GraphicsPipelineCreateInfo link_info = {
              .pNext = &link_libraries,
@@ -1408,7 +1405,7 @@ index f588a39..62e0f71 100644
              .layout = *pipeline_layout,
          };
          auto [link_result, linked] = device.createGraphicsPipelineUnique(pipeline_cache, link_info);
-@@ -1028,21 +1008,34 @@ GraphicsPipeline::GraphicsPipeline(
+@@ -1028,21 +1007,34 @@ GraphicsPipeline::GraphicsPipeline(
                      .count());
          }
  
@@ -1452,7 +1449,7 @@ index f588a39..62e0f71 100644
              const vk::PipelineLibraryCreateInfoKHR libraries_info = {
                  .libraryCount = static_cast<u32>(library_handles.size()),
                  .pLibraries = library_handles.data(),
-@@ -1069,11 +1062,15 @@ GraphicsPipeline::GraphicsPipeline(
+@@ -1069,11 +1061,15 @@ GraphicsPipeline::GraphicsPipeline(
                              "SHD-001: {} optimized links done, {:.1f} s of driver compiling",
                              links, total_us / 1e6);
              }
