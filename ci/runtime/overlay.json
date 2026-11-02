@@ -57,6 +57,14 @@
       "baseline_sha256": null,
       "new_sha256": "1e5c516a339d6cf493582d3dc0a7bfc0d5f746048f1edec792075499e3590392"
     },
+    "src/video_core/renderer_vulkan/build_queue.h": {
+      "baseline_sha256": "3f29939548c9482fe385c06097405ad9f743b2df226265966a3477350bba872b",
+      "new_sha256": "bd121690b890f68319b160538ed1e1f98a6eb73d7d635eb3696b2fbb512ec600"
+    },
+    "src/video_core/renderer_vulkan/compiler_worker_budget.h": {
+      "baseline_sha256": "b8809d08f3b9f1cf1f11d4cf317cef51d082c1337cbb1a156e15657139119377",
+      "new_sha256": "8574e1c059392c6acd029be912aa6b934f54bca2ff1dc4cdc146e530195c15a4"
+    },
     "src/video_core/renderer_vulkan/fragment_multisample_key.h": {
       "baseline_sha256": null,
       "new_sha256": "444406652765904c23eae81df72627edf6e0d6136b793b2c7626d1044375b7fc"
@@ -87,11 +95,11 @@
     },
     "src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp": {
       "baseline_sha256": "084cbdcf757c9901deadf10221bd5d8e622113bb445530c795b4ff47a6927b3b",
-      "new_sha256": "fe8809402f537792228652733d6463fee99db2dc40a1d5b15c602d50fd4f59ba"
+      "new_sha256": "52e1a90e71219e6e64e770ebe53c8f8c14f99bba85b778b238810ba67e7bfffc"
     },
     "src/video_core/renderer_vulkan/vk_pipeline_cache.cpp": {
       "baseline_sha256": "9c3032aebfbd5b317920046ea40e3db10222183a98c958f7041ab77f4d7c982e",
-      "new_sha256": "10ea4de883917ec45e8ce537fb494895af740a7cffd00c73e053e00ea5c227b0"
+      "new_sha256": "756b04915afe0829d2b4758a2823d7451a34ca0d3b54675aebb1a426f881a2b6"
     },
     "src/video_core/renderer_vulkan/vk_pipeline_common.cpp": {
       "baseline_sha256": "a7eb336a06b4193d9fc84f1bfba39ab5fb295b5d5b45abbc2a61a339d64ac47d",

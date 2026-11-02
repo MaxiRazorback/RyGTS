@@ -645,6 +645,55 @@ index 0000000..1141279
 +    }
 +};
 +}
+diff --git a/src/video_core/renderer_vulkan/build_queue.h b/src/video_core/renderer_vulkan/build_queue.h
+index cc9436c..e48ec0f 100644
+--- a/src/video_core/renderer_vulkan/build_queue.h
++++ b/src/video_core/renderer_vulkan/build_queue.h
+@@ -174,7 +174,7 @@ private:
+     // Keep queued heavy jobs out of worker threads until memory capacity is available.
+     std::deque<Entry>::iterator Runnable(std::deque<Entry>& entries) {
+         return std::find_if(entries.begin(), entries.end(), [this](const Entry& entry) {
+-            return !entry.heavy || running_heavy < CompilerWorkerBudget::HeavyPipelineLimit;
++            return !entry.heavy || running_heavy < CompilerWorkerBudget::HeavyLimit();
+         });
+     }
+     u32 running_heavy{};
+diff --git a/src/video_core/renderer_vulkan/compiler_worker_budget.h b/src/video_core/renderer_vulkan/compiler_worker_budget.h
+index 8a97ea6..66a31f0 100644
+--- a/src/video_core/renderer_vulkan/compiler_worker_budget.h
++++ b/src/video_core/renderer_vulkan/compiler_worker_budget.h
+@@ -1,11 +1,31 @@
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ #pragma once
+ #include <algorithm>
++#include <atomic>
++#include <cstdlib>
+ namespace Vulkan {
+ struct CompilerWorkerBudget {
+     // Concurrent tessellation compiles exhausted system commit in NVIDIA LLVM.
+     // Share one admission limit between dispatch and direct driver calls.
+     static constexpr unsigned HeavyPipelineLimit = 1;
++    // AMD-321: AMD's compiler kept tessellation compiles in check (AMD-320 retains no
++    // link-time data for them), so one at a time only queued the precompile behind them.
++    // AMD admits a quarter of the logical processors, at most four;
++    // RYGT_HEAVY_PIPELINE_LIMIT=1..16 overrides on any GPU.
++    static unsigned& HeavyLimitStorage() {
++        static unsigned limit = HeavyPipelineLimit;
++        return limit;
++    }
++    static void SelectHeavyLimit(unsigned vendor_id, unsigned logical) {
++        unsigned limit = vendor_id == 0x1002 ? std::clamp(logical / 4, 1u, 4u) : HeavyPipelineLimit;
++        if (const char* env = std::getenv("RYGT_HEAVY_PIPELINE_LIMIT"); env && *env) {
++            limit = std::clamp(unsigned(std::strtoul(env, nullptr, 10)), 1u, 16u);
++        }
++        HeavyLimitStorage() = limit;
++    }
++    static unsigned HeavyLimit() {
++        return HeavyLimitStorage();
++    }
+     // Splash-screen work may use every logical processor; gameplay stays bounded.
+     static constexpr unsigned StartupPipelineWorkers(unsigned logical) {
+         return std::max(1u, logical);
 diff --git a/b/src/video_core/renderer_vulkan/fragment_multisample_key.h b/src/video_core/renderer_vulkan/fragment_multisample_key.h
 new file mode 100644
 index 0000000..93507c1
@@ -1061,7 +1110,7 @@ index 0000000..eb4dc33
 +};
 +}
 diff --git a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
-index f588a39..5f43f1f 100644
+index f588a39..62e0f71 100644
 --- a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
 +++ b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
 @@ -30,6 +30,9 @@
@@ -1074,7 +1123,17 @@ index f588a39..5f43f1f 100644
  #include "video_core/renderer_vulkan/shared_creation_cache.h"
  #include "video_core/renderer_vulkan/vk_instance.h"
  #include "video_core/renderer_vulkan/vk_scheduler.h"
-@@ -249,10 +252,8 @@ static constexpr std::array LogicalStageToStageBit = {
+@@ -227,7 +230,8 @@ public:
+ 
+ private:
+     static std::counting_semaphore<64>& Semaphore() {
+-        static std::counting_semaphore<64> semaphore{CompilerWorkerBudget::HeavyPipelineLimit};
++        static std::counting_semaphore<64> semaphore{
++            static_cast<std::ptrdiff_t>(CompilerWorkerBudget::HeavyLimit())};
+         return semaphore;
+     }
+     bool held = false;
+@@ -249,10 +253,8 @@ static constexpr std::array LogicalStageToStageBit = {
  // PERF-021: time of the last pipeline a draw needed that did not exist yet.
  static std::atomic<s64> last_pipeline_miss_ms{};
  
@@ -1087,7 +1146,7 @@ index f588a39..5f43f1f 100644
  static bool LinkTimeOptimization() {
      static const bool lto = [] {
          const char* env = std::getenv("RYGT_PIPELINE_LTO");
-@@ -277,46 +278,16 @@ void GraphicsPipeline::NotePipelineMiss() {
+@@ -277,46 +279,16 @@ void GraphicsPipeline::NotePipelineMiss() {
  // thread only waits for the fast link.
  class PipelineLinkWorkers {
  public:
@@ -1143,7 +1202,7 @@ index f588a39..5f43f1f 100644
  };
  
  // PERF-018: shader stage libraries (pre-rasterization and fragment shader) of runtime
-@@ -331,23 +302,28 @@ public:
+@@ -331,23 +303,28 @@ public:
      std::shared_future<Owner> Pending(vk::Device device, u64 key) {
          return libraries.Pending({device, key});
      }
@@ -1178,7 +1237,7 @@ index f588a39..5f43f1f 100644
  private:
      SharedCreationCache<std::pair<vk::Device, u64>, vk::UniquePipeline> libraries;
      std::atomic<u64> duplicates_avoided{0};
-@@ -395,7 +371,6 @@ GraphicsPipeline::GraphicsPipeline(
+@@ -395,7 +372,6 @@ GraphicsPipeline::GraphicsPipeline(
      const auto debug_str = GetDebugString();
      BuildWatch watch{debug_str, preloading ? "stored pipeline build" : "pipeline build"};
      const bool tessellated = stages[u32(Shader::SwStage::TessellationControl)] != nullptr;
@@ -1186,7 +1245,7 @@ index f588a39..5f43f1f 100644
  
      const vk::PushConstantRange push_constants = {
          .stageFlags = AllGraphicsStageBits,
-@@ -790,10 +765,9 @@ GraphicsPipeline::GraphicsPipeline(
+@@ -790,10 +766,9 @@ GraphicsPipeline::GraphicsPipeline(
      // In practice, we use dynamic state for all of it.
      constexpr vk::PipelineDepthStencilStateCreateInfo depth_stencil_info = {};
  
@@ -1200,7 +1259,7 @@ index f588a39..5f43f1f 100644
      const vk::GraphicsPipelineCreateInfo pipeline_info = {
          .pNext = &pipeline_rendering_ci,
          .flags = tessellated && plain_tessellated ? vk::PipelineCreateFlagBits::eDisableOptimization
-@@ -817,29 +791,27 @@ GraphicsPipeline::GraphicsPipeline(
+@@ -817,29 +792,27 @@ GraphicsPipeline::GraphicsPipeline(
      // Stored ordinary pipelines use the same shared stage libraries and fast link as draws.
      // Whole-pipeline prewarm recompiles both stages for every target/blend permutation and
      // does not populate the stage-library cache used when new runtime permutations appear.
@@ -1246,7 +1305,7 @@ index f588a39..5f43f1f 100644
          library_link = std::make_unique<LibraryLink>();
          boost::container::static_vector<vk::PipelineShaderStageCreateInfo, MaxShaderStages>
              pre_raster_stages;
-@@ -893,8 +865,8 @@ GraphicsPipeline::GraphicsPipeline(
+@@ -893,8 +866,8 @@ GraphicsPipeline::GraphicsPipeline(
              auto& part_info = part_infos[i];
              part_info = pipeline_info;
              part_info.pNext = &library_infos[i];
@@ -1257,7 +1316,7 @@ index f588a39..5f43f1f 100644
                  part_info.flags |= vk::PipelineCreateFlagBits::eRetainLinkTimeOptimizationInfoEXT;
              }
              part_info.stageCount = 0;
-@@ -910,6 +882,9 @@ GraphicsPipeline::GraphicsPipeline(
+@@ -910,6 +883,9 @@ GraphicsPipeline::GraphicsPipeline(
              }
          }
          const auto create_library = [&](size_t i) {
@@ -1267,7 +1326,7 @@ index f588a39..5f43f1f 100644
              BuildWatch part_watch{debug_str, i == 1 ? "pre-raster library"
                                               : i == 2 ? "fragment library"
                                                        : "interface library"};
-@@ -924,6 +899,8 @@ GraphicsPipeline::GraphicsPipeline(
+@@ -924,6 +900,8 @@ GraphicsPipeline::GraphicsPipeline(
          // PERF-018: the shader libraries are keyed by everything their create info reads: the
          // layout's bindings, the stage modules, and the state of their pipeline subset.
          LibraryKey pre_raster_key{1};
@@ -1276,7 +1335,7 @@ index f588a39..5f43f1f 100644
          // SHD-002: the sets of the pre-rasterization stages only.
          for (u32 set = 0; set < num_sets; ++set) {
              if (set != Shader::Backend::StageSet(u32(Shader::SwStage::Fragment))) {
-@@ -946,20 +923,15 @@ GraphicsPipeline::GraphicsPipeline(
+@@ -946,20 +924,15 @@ GraphicsPipeline::GraphicsPipeline(
          }
  
          LibraryKey fragment_key{2};
@@ -1301,7 +1360,7 @@ index f588a39..5f43f1f 100644
          fragment_key.Add(pipeline_rendering_ci.viewMask);
          for (const auto state : dynamic_states) {
              fragment_key.Add(state);
-@@ -974,25 +946,31 @@ GraphicsPipeline::GraphicsPipeline(
+@@ -974,25 +947,31 @@ GraphicsPipeline::GraphicsPipeline(
          auto fragment_owner = share_libraries ? library_cache.Find(device, fragment_hash) : nullptr;
          vk::Pipeline pre_raster_library = pre_raster_owner ? **pre_raster_owner : vk::Pipeline{};
          vk::Pipeline fragment_library = fragment_owner ? **fragment_owner : vk::Pipeline{};
@@ -1341,7 +1400,7 @@ index f588a39..5f43f1f 100644
          library_link->shared_libraries = {pre_raster_owner, fragment_owner};
          library_handles[1] = pre_raster_library;
          library_handles[2] = fragment_library;
-@@ -1006,6 +984,7 @@ GraphicsPipeline::GraphicsPipeline(
+@@ -1006,6 +985,7 @@ GraphicsPipeline::GraphicsPipeline(
          };
          const vk::GraphicsPipelineCreateInfo link_info = {
              .pNext = &link_libraries,
@@ -1349,7 +1408,7 @@ index f588a39..5f43f1f 100644
              .layout = *pipeline_layout,
          };
          auto [link_result, linked] = device.createGraphicsPipelineUnique(pipeline_cache, link_info);
-@@ -1028,21 +1007,34 @@ GraphicsPipeline::GraphicsPipeline(
+@@ -1028,21 +1008,34 @@ GraphicsPipeline::GraphicsPipeline(
                      .count());
          }
  
@@ -1393,7 +1452,7 @@ index f588a39..5f43f1f 100644
              const vk::PipelineLibraryCreateInfoKHR libraries_info = {
                  .libraryCount = static_cast<u32>(library_handles.size()),
                  .pLibraries = library_handles.data(),
-@@ -1069,11 +1061,15 @@ GraphicsPipeline::GraphicsPipeline(
+@@ -1069,11 +1062,15 @@ GraphicsPipeline::GraphicsPipeline(
                              "SHD-001: {} optimized links done, {:.1f} s of driver compiling",
                              links, total_us / 1e6);
              }
@@ -1411,7 +1470,7 @@ index f588a39..5f43f1f 100644
      if (!preloading) {
          whole_watch.emplace(debug_str, "whole pipeline compile");
 diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
-index 3c085d4..b2b3de7 100644
+index 3c085d4..9e1872e 100644
 --- a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
 +++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
 @@ -1,3 +1,6 @@
@@ -1447,7 +1506,28 @@ index 3c085d4..b2b3de7 100644
  
  namespace {
  std::atomic<u32> g_shader_translations_running{};
-@@ -1048,6 +1063,10 @@ PipelineCache::~PipelineCache() {
+@@ -468,7 +483,7 @@ public:
+             }
+             LOG_INFO(Render_Vulkan, "PRECOMPILE-CPU: {} startup workers (was {}); "
+                      "{} gameplay pipeline workers; heavy limit {}",
+-                     threads.size(), previous, NumWorkers(), CompilerWorkerBudget::HeavyPipelineLimit);
++                     threads.size(), previous, NumWorkers(), CompilerWorkerBudget::HeavyLimit());
+         }
+         queue.SetBoost(on);
+     }
+@@ -857,6 +872,11 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
+     if (liverpool) {
+         liverpool->on_command_buffer_start = [this] { ReadAheadAtBufferStart(); };
+     }
++    // AMD-321: chosen before any build worker takes a heavy compile.
++    CompilerWorkerBudget::SelectHeavyLimit(instance.GetVendorID(),
++                                           std::thread::hardware_concurrency());
++    LOG_INFO(Render_Vulkan, "AMD-321: {} tessellated pipeline compiles at once",
++             CompilerWorkerBudget::HeavyLimit());
+     const auto& vk12_props = instance.GetVk12Properties();
+     profile = Shader::Profile{
+         .max_viewport_width = instance.GetMaxViewportWidth(),
+@@ -1048,6 +1068,10 @@ PipelineCache::~PipelineCache() {
      if (prewarm_reader.joinable()) prewarm_reader.join();
      translate_workers.reset();
      build_workers.reset();
@@ -1458,7 +1538,7 @@ index 3c085d4..b2b3de7 100644
      SaveDriverCache(true);
  }
  
-@@ -1061,8 +1080,86 @@ static bool DriverCacheFileEnabled() {
+@@ -1061,8 +1085,86 @@ static bool DriverCacheFileEnabled() {
  #endif
  }
  
@@ -1545,7 +1625,7 @@ index 3c085d4..b2b3de7 100644
      if (DriverCacheFileEnabled()) {
          const auto& serial = Common::Singleton<Common::ElfInfo>::Instance()->GameSerial();
          const auto identity = instance.GetPhysicalDevice().getProperties();
-@@ -1071,12 +1168,21 @@ void PipelineCache::CreateDriverCache() {
+@@ -1071,12 +1173,21 @@ void PipelineCache::CreateDriverCache() {
          driver_cache_path = Common::FS::GetUserPath(Common::FS::PathType::CacheDir) /
              fmt::format("{}-{:04x}-{:04x}-{:08x}-{}.vkpipelinecache", serial,
                          identity.vendorID, identity.deviceID, identity.driverVersion, uuid);
@@ -1568,7 +1648,7 @@ index 3c085d4..b2b3de7 100644
                  data.clear();
                  LOG_WARNING(Render_Vulkan, "CACHE-LOAD-DEFER: allocation failed; starting with an empty cache");
              }
-@@ -1092,6 +1198,7 @@ void PipelineCache::CreateDriverCache() {
+@@ -1092,6 +1203,7 @@ void PipelineCache::CreateDriverCache() {
              std::array<u8, VK_UUID_SIZE> uuid;
          } header{};
          if (data.size() < sizeof(Header)) {
@@ -1576,7 +1656,7 @@ index 3c085d4..b2b3de7 100644
              data.clear();
          } else {
              std::memcpy(&header, data.data(), sizeof(Header));
-@@ -1100,10 +1207,16 @@ void PipelineCache::CreateDriverCache() {
+@@ -1100,10 +1212,16 @@ void PipelineCache::CreateDriverCache() {
                  header.vendor_id != props.vendorID || header.device_id != props.deviceID ||
                  std::memcmp(header.uuid.data(), props.pipelineCacheUUID.data(), VK_UUID_SIZE)) {
                  LOG_INFO(Render_Vulkan, "Driver pipeline cache is from another GPU or driver");
@@ -1593,7 +1673,7 @@ index 3c085d4..b2b3de7 100644
      auto [cache_result, cache] =
          instance.GetDevice().createPipelineCacheUnique(vk::PipelineCacheCreateInfo{
              .initialDataSize = data.size(),
-@@ -1112,6 +1225,17 @@ void PipelineCache::CreateDriverCache() {
+@@ -1112,6 +1230,17 @@ void PipelineCache::CreateDriverCache() {
      if (cache_result != vk::Result::eSuccess && !data.empty()) {
          LOG_WARNING(Render_Vulkan, "Driver pipeline cache rejected ({}), starting empty",
                      vk::to_string(cache_result));
@@ -1611,7 +1691,7 @@ index 3c085d4..b2b3de7 100644
          auto [empty_result, empty_cache] = instance.GetDevice().createPipelineCacheUnique({});
          cache_result = empty_result;
          cache = std::move(empty_cache);
-@@ -1151,8 +1275,9 @@ static std::vector<u8> ReadDriverCacheSnapshot(vk::Device device, vk::PipelineCa
+@@ -1151,8 +1280,9 @@ static std::vector<u8> ReadDriverCacheSnapshot(vk::Device device, vk::PipelineCa
      }
  }
  
@@ -1622,7 +1702,7 @@ index 3c085d4..b2b3de7 100644
          return;
      }
      // PERF-036: GT Sport's driver cache grows to several GB (3.4 GB on October 9). Reading it out
-@@ -1173,12 +1298,9 @@ void PipelineCache::SaveDriverCache(bool wait) {
+@@ -1173,12 +1303,9 @@ void PipelineCache::SaveDriverCache(bool wait) {
          // Write beside the file and rename, so an interrupted write never leaves a broken cache.
          auto temp = path;
          temp += ".tmp";
@@ -1638,7 +1718,7 @@ index 3c085d4..b2b3de7 100644
          }
  #ifdef _WIN32
          const bool replaced = MoveFileExW(temp.c_str(), path.c_str(),
-@@ -1334,7 +1456,9 @@ void PipelineCache::QueueBuild(const std::shared_ptr<PipelineBuild>& build, bool
+@@ -1334,7 +1461,9 @@ void PipelineCache::QueueBuild(const std::shared_ptr<PipelineBuild>& build, bool
      };
      build_workers->Push(std::move(job), urgent,
          Common::PerfFeatureEnabled(79) &&
@@ -1649,7 +1729,7 @@ index 3c085d4..b2b3de7 100644
  }
  
  std::shared_ptr<PipelineCache::PipelineBuild> PipelineCache::StartPipelineBuild(bool urgent) {
-@@ -2037,19 +2161,13 @@ std::chrono::microseconds PipelineCache::QuickWait() {
+@@ -2037,19 +2166,13 @@ std::chrono::microseconds PipelineCache::QuickWait() {
  }
  
  bool PipelineCache::MenusWait() {
@@ -1675,7 +1755,7 @@ index 3c085d4..b2b3de7 100644
  #else
      return false;
  #endif
-@@ -2076,7 +2194,9 @@ void PipelineCache::QueueBackgroundBuild(const std::shared_ptr<PipelineBuild>& b
+@@ -2076,7 +2199,9 @@ void PipelineCache::QueueBackgroundBuild(const std::shared_ptr<PipelineBuild>& b
          }
          ++g_precompile_done; // PERF-098
      }, Common::PerfFeatureEnabled(79) &&
@@ -1686,7 +1766,7 @@ index 3c085d4..b2b3de7 100644
  }
  
  void PipelineCache::ReadAheadAtBufferStart() {
-@@ -2183,6 +2303,9 @@ void PipelineCache::ReadAhead(const DrawIndirectParams params, bool restore) {
+@@ -2183,6 +2308,9 @@ void PipelineCache::ReadAhead(const DrawIndirectParams params, bool restore) {
      }
  }
  
@@ -1696,7 +1776,7 @@ index 3c085d4..b2b3de7 100644
  void PipelineCache::BuildQueuedStates(const DrawIndirectParams params, bool restore) {
      auto* states = liverpool->PipeReadAheadStates();
      if (!states || states->Empty()) {
-@@ -2198,10 +2321,28 @@ void PipelineCache::BuildQueuedStates(const DrawIndirectParams params, bool rest
+@@ -2198,10 +2326,28 @@ void PipelineCache::BuildQueuedStates(const DrawIndirectParams params, bool rest
      const bool key_was_legacy = S().key_uses_legacy; // D10: made again the same way below
      u32 evaluated = 0;
      u32 started = 0;
@@ -1728,7 +1808,7 @@ index 3c085d4..b2b3de7 100644
             states->Take(queued_state_regs->reg_array)) {
          ++evaluated;
          regs_override = queued_state_regs.get();
-@@ -2229,14 +2370,8 @@ void PipelineCache::BuildQueuedStates(const DrawIndirectParams params, bool rest
+@@ -2229,14 +2375,8 @@ void PipelineCache::BuildQueuedStates(const DrawIndirectParams params, bool rest
          // PERF-038: the game needs pipelines; background builds wait.
          build_workers->PauseBackground(std::chrono::steady_clock::now() + std::chrono::seconds{2});
      }
@@ -1745,7 +1825,7 @@ index 3c085d4..b2b3de7 100644
      auto& stats = queued_state_stats;
      const auto now = std::chrono::steady_clock::now();
      stats.evaluated += evaluated;
-@@ -2256,7 +2391,20 @@ void PipelineCache::BuildQueuedStates(const DrawIndirectParams params, bool rest
+@@ -2256,7 +2396,20 @@ void PipelineCache::BuildQueuedStates(const DrawIndirectParams params, bool rest
  
  void PipelineCache::WaitForBuild(PipelineBuild& build, const DrawIndirectParams params) {
      using namespace std::chrono_literals;
@@ -1767,7 +1847,7 @@ index 3c085d4..b2b3de7 100644
      // An urgent build goes to the front of the compiler queue. While it is pending this
      // thread can discover more builds, but it never claims a compiler job itself.
      if (build.urgent) {
-@@ -2266,7 +2414,7 @@ void PipelineCache::WaitForBuild(PipelineBuild& build, const DrawIndirectParams
+@@ -2266,7 +2419,7 @@ void PipelineCache::WaitForBuild(PipelineBuild& build, const DrawIndirectParams
          }
      }
      while (build.done.wait_for(500us) != std::future_status::ready) {
@@ -1776,7 +1856,7 @@ index 3c085d4..b2b3de7 100644
      }
  #ifdef RYTY_GPU
      // PERF-101: GPU.compile_batch_ms (launcher "Shader compile batching"): with the game paused
-@@ -2354,7 +2502,7 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
+@@ -2354,7 +2507,7 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
      }
      // D10: a key of new translations whose pipeline is not built yet. It is built in the
      // background; meanwhile the draw uses the key made of the old renderer's translations.
@@ -1785,7 +1865,7 @@ index 3c085d4..b2b3de7 100644
          !graphics_pipelines.contains(S().graphics_key)) {
          const auto pending = pending_builds.find(S().graphics_key);
          const bool ready = pending != pending_builds.end() &&
-@@ -3295,14 +3443,15 @@ vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::Runtim
+@@ -3295,14 +3448,15 @@ vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::Runtim
              .count(),
          spv.size());
  
@@ -1803,7 +1883,7 @@ index 3c085d4..b2b3de7 100644
      return module;
  }
  
-@@ -3397,8 +3546,8 @@ struct PipelineCache::PrewarmRecord {
+@@ -3397,8 +3551,8 @@ struct PipelineCache::PrewarmRecord {
      GraphicsPipeline::SerializationSupport sdata{};
      std::array<u64, MaxShaderStages> pgm{};
      std::array<size_t, MaxShaderStages> perm{};
@@ -1814,7 +1894,7 @@ index 3c085d4..b2b3de7 100644
  };
  
  void PipelineCache::PrewarmRead(std::stop_token stop) {
-@@ -3455,6 +3604,12 @@ void PipelineCache::PrewarmRead(std::stop_token stop) {
+@@ -3455,6 +3609,12 @@ void PipelineCache::PrewarmRead(std::stop_token stop) {
      const size_t window = std::max<size_t>(32, size_t{readers} * 2);
      LOG_INFO(Render_Vulkan, "PRECOMPILE-READ: {} file readers, {}-record window", readers, window);
      u64 skipped = 0;
@@ -1827,7 +1907,7 @@ index 3c085d4..b2b3de7 100644
      const bool complete = OrderedParallelRead(keys.size(), readers, window, stop,
        [&](size_t index) {
          const auto& name = keys[index].first;
-@@ -3473,28 +3628,45 @@ void PipelineCache::PrewarmRead(std::stop_token stop) {
+@@ -3473,28 +3633,45 @@ void PipelineCache::PrewarmRead(std::stop_token stop) {
                  if (perm_hash == 0) {
                      continue;
                  }
@@ -1885,7 +1965,7 @@ index 3c085d4..b2b3de7 100644
              }
          } catch (const std::exception&) {
              // RecoverableFailure, or a corrupt entry (std::bitset rejects bad text).
-@@ -3600,10 +3772,12 @@ void PipelineCache::InstallPrewarmed(bool force) {
+@@ -3600,10 +3777,12 @@ void PipelineCache::InstallPrewarmed(bool force) {
  
  bool PipelineCache::InstallPrewarmRecord(PrewarmRecord& record) {
      for (auto& listing : record.listings) {
@@ -1900,7 +1980,7 @@ index 3c085d4..b2b3de7 100644
          }
      }
      if (graphics_pipelines.contains(record.key) || pending_builds.contains(record.key)) {
-@@ -3628,10 +3802,10 @@ bool PipelineCache::InstallPrewarmRecord(PrewarmRecord& record) {
+@@ -3628,10 +3807,10 @@ bool PipelineCache::InstallPrewarmRecord(PrewarmRecord& record) {
          }
          if (permutation.stored) {
              // The same SPIR-V a draw's first use would load (PERF-032), read on the reader thread.
@@ -1913,7 +1993,7 @@ index 3c085d4..b2b3de7 100644
              permutation.stored = false;
          }
          if (!permutation.module) {
-@@ -4959,7 +5133,7 @@ PipelineCache::Result PipelineCache::GetProgramImpl(HwStage hw_stage, SwStage sw
+@@ -4959,7 +5138,7 @@ PipelineCache::Result PipelineCache::GetProgramImpl(HwStage hw_stage, SwStage sw
          // D10: the new translation is made on a worker; meanwhile the draw's key is made of the
          // old renderer's translations (GetGraphicsPipeline / GetComputePipeline). Without them,
          // the usual way (fallback_nested).
@@ -1922,7 +2002,7 @@ index 3c085d4..b2b3de7 100644
              if (QueueTranslation(hw_stage, sw_stage, params, runtime_info, binding, true)) {
                  ++legacy_stats.queued;
              }
-@@ -5190,7 +5364,7 @@ std::shared_ptr<const void> PipelineCache::KeepAlive(const ComputePipeline* pipe
+@@ -5190,7 +5369,7 @@ std::shared_ptr<const void> PipelineCache::KeepAlive(const ComputePipeline* pipe
  void PipelineCache::TrimUnusedPipelines() {
      using namespace std::chrono;
      const auto now = steady_clock::now();
@@ -1931,7 +2011,7 @@ index 3c085d4..b2b3de7 100644
      retention_last_scan = now;
      // Retain reusable pipelines until the live device-local budget needs headroom.
      // VMA allocation totals omit driver-owned pipeline memory; query the driver.
-@@ -5218,9 +5392,10 @@ void PipelineCache::TrimUnusedPipelines() {
+@@ -5218,9 +5397,10 @@ void PipelineCache::TrimUnusedPipelines() {
      if (!lock.owns_lock()) return;
      retention_now = now;
      if (!under_pressure) return;
@@ -1944,7 +2024,7 @@ index 3c085d4..b2b3de7 100644
      std::vector<std::shared_ptr<const void>> retired;
      const auto trim = [&](auto& cache) {
          using Entry = typename std::remove_reference_t<decltype(cache)>::value_type;
-@@ -5251,9 +5426,15 @@ void PipelineCache::TrimUnusedPipelines() {
+@@ -5251,9 +5431,15 @@ void PipelineCache::TrimUnusedPipelines() {
      if (retired.empty()) return;
      const auto count = retired.size();
      // Includes commands already recorded in the current, not-yet-submitted batch.
