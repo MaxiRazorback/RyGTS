@@ -15,11 +15,10 @@ if (-not (Test-Path $GameExe)) {
     exit 1
 }
 
-$ui = Get-Process RadeonSoftware -ErrorAction SilentlyContinue
-$uiPath = if ($ui) { $ui[0].Path }
-if ($ui) {
-    $ui | Stop-Process -Force
-    Start-Sleep -Seconds 2
+# Never close or start AMD Software: with its window open, the next start tries again.
+if (Get-Process RadeonSoftware -ErrorAction SilentlyContinue) {
+    Write-Host 'AMD Software is open; the game list was left alone.'
+    exit 3
 }
 
 $text = [System.IO.File]::ReadAllText($db)
@@ -62,7 +61,3 @@ $json = $data | ConvertTo-Json -Depth 50
 [System.IO.File]::WriteAllText($db, $json, (New-Object System.Text.UTF8Encoding($false)))
 Write-Host "$(if ($existing) { 'Updated' } else { 'Added' }) '$Title' -> $GameExe"
 Write-Host "Backup of the previous list: $db.rygt-backup"
-
-if ($uiPath) {
-    Start-Process $uiPath
-}
