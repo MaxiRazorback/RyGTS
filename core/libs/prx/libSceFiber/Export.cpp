@@ -16,25 +16,44 @@
 #include <windows.h>
 #endif
 
-// Reclaim a reused guest allocation for CPU stack use before executing on it.
-// Renderer page watches must be invalidated while the current stack is still safe;
-// a fault after switching to a protected stack may not be dispatchable by Windows.
-static void PrepareCpuStack(void* context, std::uint64_t size) {
+struct CpuStackRegistration {
+    using Release = void (*)(std::uint64_t, std::uint64_t);
+    Release release = nullptr;
 #ifdef _WIN32
-    using Invalidate = void (*)(std::uint64_t, std::uint64_t);
-    static std::atomic<Invalidate> cached{nullptr};
-    auto invalidate = cached.load(std::memory_order_acquire);
-    if (!invalidate) {
-        if (HMODULE renderer = GetModuleHandleA("libSceVideoOut.prx")) {
-            invalidate = reinterpret_cast<Invalidate>(reinterpret_cast<void*>(
-                GetProcAddress(renderer, "RytyGpuInvalidateMemory")));
-            if (invalidate) cached.store(invalidate, std::memory_order_release);
-        }
+    HMODULE renderer = nullptr;
+#endif
+};
+
+// Register the context lifetime so native geometry mirrors cannot watch its stack
+// pages again before Finalize. Other GPU resource watches retain their coherence path.
+// These callbacks use the host C ABI, not the guest's APS5_VABI calling convention.
+static bool RegisterCpuStack(void* context, std::uint64_t size, CpuStackRegistration& registration) {
+#ifdef _WIN32
+    using Register = int (*)(std::uint64_t, std::uint64_t);
+    HMODULE renderer = nullptr;
+    if (!GetModuleHandleExA(0, "libSceVideoOut.prx", &renderer)) return false;
+    const auto acquire = reinterpret_cast<Register>(reinterpret_cast<void*>(
+        GetProcAddress(renderer, "RytyGpuRegisterCpuStack")));
+    const auto release = reinterpret_cast<CpuStackRegistration::Release>(reinterpret_cast<void*>(
+        GetProcAddress(renderer, "RytyGpuUnregisterCpuStack")));
+    if (!acquire || !release || acquire(reinterpret_cast<std::uint64_t>(context), size) == 0) {
+        FreeLibrary(renderer);
+        return false;
     }
-    if (invalidate) invalidate(reinterpret_cast<std::uint64_t>(context), size);
+    registration.release = release;
+    registration.renderer = renderer;
 #else
     (void)context;
     (void)size;
+    (void)registration;
+#endif
+    return true;
+}
+
+static void UnregisterCpuStack(void* context, std::uint64_t size, const CpuStackRegistration& registration) {
+    if (registration.release) registration.release(reinterpret_cast<std::uint64_t>(context), size);
+#ifdef _WIN32
+    if (registration.renderer) FreeLibrary(registration.renderer);
 #endif
 }
 
@@ -61,10 +80,11 @@ enum class FiberState : std::uint32_t {
     Running = 2,
     Suspending = 3,
     Suspended = 4,
+    Finalizing = 5,
 };
 
 struct Fiber {
-    std::uint64_t magic;
+    std::atomic<std::uint64_t> magic;
     std::atomic<FiberState> state;
     std::uint32_t reserved;
     GuestFiberEntry entry;
@@ -74,6 +94,7 @@ struct Fiber {
     void* savedStack;
     char name[FIBER_MAX_NAME_LENGTH + 1];
     bool contextSizeCheck;
+    CpuStackRegistration stackRegistration;
 };
 static_assert(sizeof(Fiber) <= FIBER_OBJECT_SIZE, "guest reserves 0x100 bytes for SceFiber");
 
@@ -274,7 +295,7 @@ static StackBounds FiberBounds(const Fiber* fiber) {
 
 static Fiber* AsFiber(FiberObject* object) {
     auto* fiber = reinterpret_cast<Fiber*>(object);
-    return fiber && fiber->magic == FIBER_MAGIC ? fiber : nullptr;
+    return fiber && fiber->magic.load(std::memory_order_acquire) == FIBER_MAGIC ? fiber : nullptr;
 }
 
 extern "C" [[noreturn]] void Aps5FiberMain_nid_no_patch(Fiber* fiber) {
@@ -338,21 +359,25 @@ int32_t APS5_VABI _sceFiberInitializeImpl_nid_postfix(FiberObject* object, const
     if ((reinterpret_cast<std::uintptr_t>(addr_context) & 15) != 0 || (size_context & 15) != 0) return SCE_FIBER_ERROR_ALIGNMENT;
     if (addr_context == nullptr) return SCE_FIBER_ERROR_INVALID;
     if (size_context < FIBER_MIN_CONTEXT_SIZE) return SCE_FIBER_ERROR_RANGE;
-    PrepareCpuStack(addr_context, size_context);
+    if (size_context > UINTPTR_MAX - reinterpret_cast<std::uintptr_t>(addr_context)) return SCE_FIBER_ERROR_RANGE;
+    if (AsFiber(object)) return SCE_FIBER_ERROR_STATE;
+    CpuStackRegistration registration;
+    if (!RegisterCpuStack(addr_context, size_context, registration)) return SCE_FIBER_ERROR_STATE;
     auto* fiber = reinterpret_cast<Fiber*>(object);
     std::memset(object, 0, FIBER_OBJECT_SIZE);
-    fiber->magic = FIBER_MAGIC;
     fiber->state.store(FiberState::Idle, std::memory_order_relaxed);
     fiber->entry = entry;
     fiber->argOnInitialize = arg_on_initialize;
     fiber->context = static_cast<std::uint8_t*>(addr_context);
     fiber->contextSize = size_context;
+    fiber->stackRegistration = registration;
     std::strncpy(fiber->name, name, FIBER_MAX_NAME_LENGTH);
     fiber->contextSizeCheck = g_contextSizeCheck.load(std::memory_order_relaxed);
     if (fiber->contextSizeCheck) {
         auto* words = static_cast<std::uint64_t*>(addr_context);
         std::fill(words, words + size_context / sizeof(std::uint64_t), FIBER_CONTEXT_FILL);
     }
+    fiber->magic.store(FIBER_MAGIC, std::memory_order_release);
     if (TraceFibers()) std::fprintf(stderr, "[fiber] init %s object=%p context=%p+0x%llx entry=%p\n", fiber->name, static_cast<void*>(object), addr_context, static_cast<unsigned long long>(size_context), reinterpret_cast<void*>(entry));
     return SCE_OK;
 }
@@ -360,9 +385,12 @@ int32_t APS5_VABI _sceFiberInitializeImpl_nid_postfix(FiberObject* object, const
 int32_t APS5_VABI sceFiberFinalize(FiberObject* object) {
     auto* fiber = AsFiber(object);
     if (!fiber) return object ? SCE_FIBER_ERROR_INVALID : SCE_FIBER_ERROR_NULL;
-    const auto state = fiber->state.load(std::memory_order_acquire);
-    if (state == FiberState::Running || state == FiberState::Suspending) return SCE_FIBER_ERROR_STATE;
-    fiber->magic = 0;
+    auto state = fiber->state.load(std::memory_order_acquire);
+    do {
+        if (state != FiberState::Idle && state != FiberState::Suspended) return SCE_FIBER_ERROR_STATE;
+    } while (!fiber->state.compare_exchange_weak(state, FiberState::Finalizing, std::memory_order_acq_rel));
+    UnregisterCpuStack(fiber->context, fiber->contextSize, fiber->stackRegistration);
+    fiber->magic.store(0, std::memory_order_release);
     return SCE_OK;
 }
 

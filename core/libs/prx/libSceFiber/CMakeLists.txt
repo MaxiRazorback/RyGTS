@@ -14,6 +14,13 @@ if(BUILD_TESTING)
     target_link_libraries(fiber_tests PRIVATE libSceFiber libc)
     add_test(NAME fiber COMMAND fiber_tests)
     if(WIN32)
+        add_test_executable(fiber_cpu_stack_ownership_tests tests/CpuStackOwnership.cpp)
+        target_include_directories(fiber_cpu_stack_ownership_tests PRIVATE ${LIBS_INCLUDE_DIR})
+        target_link_libraries(fiber_cpu_stack_ownership_tests PRIVATE libc)
+        add_test(NAME fiber_cpu_stack_ownership COMMAND fiber_cpu_stack_ownership_tests)
+        set_tests_properties(fiber_cpu_stack_ownership PROPERTIES TIMEOUT 30)
+        # This smoke takes explicit staged Fiber/native DLL paths; never run it on installed game DLLs.
+        add_test_executable(fiber_cpu_stack_pair_smoke EXCLUDE_FROM_ALL tests/PairedDllSmoke.cpp)
         set_tests_properties(fiber PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceFiber>")
     endif()
