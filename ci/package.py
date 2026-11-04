@@ -112,13 +112,16 @@ def assemble(base, commit, flavor, channel, suffix):
     pin = json.loads((root / 'renderer/source.json').read_text())
     source_file = verify_artifact(renderer_folder, 'CI-SOURCE.txt', commit, 'data')
     source = source_file.read_text(encoding='utf-8-sig')
-    if source.splitlines() != [pin['repository'], pin['commit']]:
-        raise RuntimeError('Renderer source pin mismatch')
+    lines = source.splitlines()
+    expected = os.environ.get('RENDERER_SHA')
+    if len(lines) != 2 or lines[0] != pin['repository'] or not re.fullmatch('[0-9a-f]{40}', lines[1]) or (expected and lines[1] != expected) or (pin['commit'] != 'HEAD' and pin['commit'] != lines[1]):
+        raise RuntimeError('Renderer source revision mismatch')
+    expected = lines[1]
     runtime_file = verify_artifact(renderer_folder, 'RUNTIME-SOURCE.json', commit, 'data')
     runtime_overlay = json.loads(runtime_file.read_text(encoding='utf-8-sig'))
     runtime_spec = json.loads((root / 'ci/runtime/overlay.json').read_text(encoding='utf-8'))
     runtime_patch = root / 'ci/runtime/production-source.patch'
-    if (runtime_overlay.get('schema') != 1 or runtime_overlay.get('renderer_commit') != pin['commit'] or
+    if (runtime_overlay.get('schema') != 1 or runtime_overlay.get('renderer_commit') != expected or
             runtime_overlay.get('overlay_sha256') != sha(runtime_patch) or
             runtime_overlay.get('source_files') != runtime_spec.get('source_files')):
         raise RuntimeError('Production renderer overlay provenance mismatch')
@@ -190,7 +193,7 @@ def assemble(base, commit, flavor, channel, suffix):
             if hashlib.sha256(archive.read(name + '/' + file)).hexdigest() != digest: raise RuntimeError('Packaged checksum mismatch')
     digest = sha(result)
     (destination / (result.name + '.sha256')).write_text(digest + '  ' + result.name + '\n')
-    return dict(channel=channel, flavor=flavor, archive=result.name, sha256=digest, files=len(manifest)+1)
+    return dict(channel=channel, flavor=flavor, archive=result.name, sha256=digest, files=len(manifest)+1, renderer_commit=expected)
 
 
 def package():
@@ -203,7 +206,9 @@ def package():
             shutil.copyfileobj(response, output)
     if sha(base) != BASE_SHA: raise RuntimeError('Pinned runtime archive checksum mismatch')
     variants = [assemble(base, commit, *variant) for variant in VARIANTS]
-    (Path('dist') / 'CI-PACKAGES.json').write_text(json.dumps(dict(schema=2, commit=commit, variants=variants), indent=2) + '\n')
+    if len({variant['renderer_commit'] for variant in variants}) != 1:
+        raise RuntimeError('Renderer revisions differ between package variants')
+    (Path('dist') / 'CI-PACKAGES.json').write_text(json.dumps(dict(schema=2, commit=commit, renderer_commit=variants[0]['renderer_commit'], variants=variants), indent=2) + '\n')
     print(json.dumps(variants, indent=2))
 
 

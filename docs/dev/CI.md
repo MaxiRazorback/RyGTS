@@ -74,9 +74,13 @@ recording for performance comparisons. The tracing overlay does not fix graphics
 or change culling/LOD policy. Both packages preserve Discord RPC and enable shader
 precompilation and pipeline caching in the factory configuration, including 16 GB.
 
-`renderer/source.json` pins the ShadGT `ryty-gpu` commit. Push a renderer change
-there before publishing a RyGTS pin that references it. Local investigation
-branches and unpushed renderer commits are not included automatically.
+`renderer/source.json` selects the ShadGT `ryty-gpu` branch with `commit: HEAD`.
+The controller resolves its commit once and passes it as `RENDERER_SHA` to both
+builds and the packager. A full commit SHA remains supported as an explicit pin;
+an overriding SHA must match it. For manual builds set `RENDERER_SHA` to the
+same full commit for both flavors and packaging. Without it, renderer preparation
+resolves the branch itself. Runtime and diagnostics overlays still require their
+reviewed source contents and fail if a new renderer needs an overlay rebase.
 
 ## Workflow maintenance and credentials
 

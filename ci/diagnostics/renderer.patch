@@ -12,10 +12,10 @@ index 54532cd8..e41bc306 100644
          if (MSVC)
              target_link_libraries(${target} PRIVATE clang_rt.builtins-x86_64.lib)
 diff --git a/src/video_core/renderer_vulkan/vk_rasterizer_native.cpp b/src/video_core/renderer_vulkan/vk_rasterizer_native.cpp
-index d0506731..d4704b95 100644
+index 0e7988c4..e40abbc0 100644
 --- a/src/video_core/renderer_vulkan/vk_rasterizer_native.cpp
 +++ b/src/video_core/renderer_vulkan/vk_rasterizer_native.cpp
-@@ -81,7 +81,14 @@ namespace VideoCore {
+@@ -84,7 +84,14 @@ namespace VideoCore {
  vk::ImageViewType ConvertImageViewType(AmdGpu::ImageType type);
  }
  
@@ -30,7 +30,7 @@ index d0506731..d4704b95 100644
  bool RytyGtsInRace();
  extern std::atomic<u64> g_prepared_frames;
  bool RytyGtsMenuSnapshotsAllowed();
-@@ -631,6 +638,7 @@ void NativeRenderer::FinishNativeFsr(const Targets& targets) {
+@@ -634,6 +641,7 @@ void NativeRenderer::FinishNativeFsr(const Targets& targets) {
  }
  
  NativeRenderer::NativeRenderer(Rasterizer& rasterizer) : r{rasterizer} {
@@ -38,7 +38,7 @@ index d0506731..d4704b95 100644
      sampler_cache_epoch.fetch_add(1, std::memory_order_acq_rel);
      device = Native::Rhi::CreateVulkanDevice(r.instance);
      ASSERT_MSG(device, "NAT-100: no native device");
-@@ -883,6 +891,8 @@ NativeRenderer::NativeRenderer(Rasterizer& rasterizer) : r{rasterizer} {
+@@ -886,6 +894,8 @@ NativeRenderer::NativeRenderer(Rasterizer& rasterizer) : r{rasterizer} {
  }
  
  NativeRenderer::~NativeRenderer() {
@@ -47,7 +47,7 @@ index d0506731..d4704b95 100644
      mirror_preparation.reset(); // Join before any device or direct-memory teardown.
      sampler_cache_epoch.fetch_add(1, std::memory_order_acq_rel);
      std::scoped_lock lock{mutex};
-@@ -996,9 +1006,18 @@ Native::MadeImage NativeRenderer::MakeImage(const VideoCore::ImageInfo& info, bo
+@@ -999,9 +1009,18 @@ Native::MadeImage NativeRenderer::MakeImage(const VideoCore::ImageInfo& info, bo
  vk::ImageView NativeRenderer::View(const Native::ImageEntry& entry,
                                     const VideoCore::ImageViewInfo& requested, ViewUse use) {
      std::scoped_lock lock{views_mutex};
@@ -66,7 +66,7 @@ index d0506731..d4704b95 100644
              return *record.view;
          }
      }
-@@ -1090,6 +1109,8 @@ vk::ImageView NativeRenderer::View(const Native::ImageEntry& entry,
+@@ -1093,6 +1112,8 @@ vk::ImageView NativeRenderer::View(const Native::ImageEntry& entry,
          return {};
      }
      const vk::ImageView handle = *view;
@@ -75,7 +75,7 @@ index d0506731..d4704b95 100644
      records.push_back({requested, use, std::move(view)});
      return handle;
  }
-@@ -3051,6 +3072,7 @@ void NativeRenderer::BindBuffers(const Shader::Info& stage, const AmdGpu::Regs&
+@@ -3103,6 +3124,7 @@ void NativeRenderer::BindBuffers(const Shader::Info& stage, const AmdGpu::Regs&
                  }
              }
          }
@@ -83,7 +83,7 @@ index d0506731..d4704b95 100644
          b.buffers.push_back(info);
          b.write_sets.push_back(u8(Shader::Backend::StageSet(u32(stage.sw_stage)))); // SHD-002
          b.writes.push_back(vk::WriteDescriptorSet{
-@@ -3068,6 +3090,46 @@ void NativeRenderer::BindBuffers(const Shader::Info& stage, const AmdGpu::Regs&
+@@ -3120,6 +3142,46 @@ void NativeRenderer::BindBuffers(const Shader::Info& stage, const AmdGpu::Regs&
  
  void NativeRenderer::BindTextures(const Shader::Info& stage, const AmdGpu::Regs& regs,
                                    Shader::Backend::Bindings& binding, DrawBindings& b) {
@@ -127,10 +127,10 @@ index d0506731..d4704b95 100644
 +                sharp.LodBias(), address, custom, readable, color[0],color[1],color[2],color[3],raw));
 +        }
 +    }
-     for (const auto& image_desc : stage.images) {
-         auto tsharp = image_desc.GetSharp(stage);
-         MatchExperimentalCompositionTexture(tsharp, stage, image_desc, *registry);
-@@ -3089,6 +3151,7 @@ void NativeRenderer::BindTextures(const Shader::Info& stage, const AmdGpu::Regs&
+     // DIAG-207 (RYGT_NULL_TEXTURES=<hash>:<hex slot mask>): that program's chosen texture slots
+     // are bound empty, to see which one carries a wrong colour. Recorder-side draws only.
+     static const std::pair<u64, u64> null_textures = [] {
+@@ -3157,6 +3219,7 @@ void NativeRenderer::BindTextures(const Shader::Info& stage, const AmdGpu::Regs&
              binding.unified += num_bindings;
          };
          const auto bind_null = [&](u32 reason) {
@@ -138,7 +138,7 @@ index d0506731..d4704b95 100644
              for (u32 i = 0; i < num_bindings; ++i) {
                  b.images.push_back({VK_NULL_HANDLE, VK_NULL_HANDLE, vk::ImageLayout::eGeneral});
              }
-@@ -3209,7 +3272,7 @@ void NativeRenderer::BindTextures(const Shader::Info& stage, const AmdGpu::Regs&
+@@ -3286,7 +3349,7 @@ void NativeRenderer::BindTextures(const Shader::Info& stage, const AmdGpu::Regs&
                  const char* env = std::getenv("RYGT_FRAME_DUMP_ALL_TEXTURES");
                  return env && env[0] == '1';
              }();
@@ -147,7 +147,7 @@ index d0506731..d4704b95 100644
                  auto key = Rasterizer::FrameDumpTextureKey(desc.info); // NAT-123
                  if (std::ranges::find(dump_textures, key, &decltype(dump_textures)::value_type::first) ==
                      dump_textures.end()) {
-@@ -3236,6 +3299,23 @@ void NativeRenderer::BindTextures(const Shader::Info& stage, const AmdGpu::Regs&
+@@ -3313,6 +3376,23 @@ void NativeRenderer::BindTextures(const Shader::Info& stage, const AmdGpu::Regs&
                  View(*entry, view_info, storage ? ViewUse::Storage
                                                 : cube_sampling ? ViewUse::CubeSampled
                                                             : ViewUse::Sampled);
@@ -171,7 +171,7 @@ index d0506731..d4704b95 100644
              b.images.push_back({VK_NULL_HANDLE, view, vk::ImageLayout::eGeneral});
          }
          if (memo) {
-@@ -3257,6 +3337,7 @@ void NativeRenderer::BindTextures(const Shader::Info& stage, const AmdGpu::Regs&
+@@ -3334,6 +3414,7 @@ void NativeRenderer::BindTextures(const Shader::Info& stage, const AmdGpu::Regs&
                                  regs.ta_bc_base.Address() == 0)) {
              ssharp = AmdGpu::Sampler{};
          }
@@ -179,7 +179,7 @@ index d0506731..d4704b95 100644
          b.images.push_back({SamplerFor(ssharp, regs.ta_bc_base, sampler.is_depth), VK_NULL_HANDLE,
                              vk::ImageLayout::eGeneral});
          b.write_sets.push_back(u8(Shader::Backend::StageSet(u32(stage.sw_stage)))); // SHD-002
-@@ -3980,7 +4061,9 @@ void NativeRenderer::NoteWrites(const Targets* targets, const DrawBindings& b) {
+@@ -4073,7 +4154,9 @@ struct PixelTrace {
  void NativeRenderer::Draw(bool is_indexed, u32 index_offset) {
      std::scoped_lock lock{mutex};
      const auto start = std::chrono::steady_clock::now();
@@ -190,7 +190,7 @@ index d0506731..d4704b95 100644
      stats.timed_draws += t_timed ? 1 : 0;
      struct Timed {
          std::chrono::steady_clock::time_point start;
-@@ -4363,6 +4446,14 @@ void NativeRenderer::Draw(bool is_indexed, u32 index_offset) {
+@@ -4460,6 +4543,14 @@ void NativeRenderer::Draw(bool is_indexed, u32 index_offset) {
              ++stats.passes_unblocked;
          }
      }
@@ -205,7 +205,7 @@ index d0506731..d4704b95 100644
      {
          PhaseClock part{stats.record_ns[1]};
          BeginRendering(targets.state);
-@@ -4439,6 +4530,19 @@ void NativeRenderer::Draw(bool is_indexed, u32 index_offset) {
+@@ -4536,6 +4627,19 @@ void NativeRenderer::Draw(bool is_indexed, u32 index_offset) {
              DrawOffsets(regs, vs_info, pipeline->GetFetchShader());
          const u32 instances = regs.num_instances.NumInstances();
          const auto* fs = pipeline->GetStages()[u32(Shader::SwStage::Fragment)];
@@ -225,7 +225,7 @@ index d0506731..d4704b95 100644
          Native::GpuCheckpoints::Record(static_cast<VkCommandBuffer>(s.cmd), 1, frame,
              vs_info.pgm_hash, fs ? fs->pgm_hash : 0, regs.num_indices);
          if (quad_triangles) {
-@@ -4452,6 +4556,7 @@ void NativeRenderer::Draw(bool is_indexed, u32 index_offset) {
+@@ -4549,6 +4653,7 @@ void NativeRenderer::Draw(bool is_indexed, u32 index_offset) {
          } else {
              cmdbuf.draw(regs.num_indices, instances, vertex_offset, instance_offset);
          }
@@ -233,7 +233,7 @@ index d0506731..d4704b95 100644
      }
      {
          PhaseClock part{stats.record_ns[7]};
-@@ -5734,6 +5839,8 @@ void NativeRenderer::DispatchDirect() {
+@@ -5911,6 +6016,8 @@ void NativeRenderer::DispatchDirect() {
                           .count();
          }
      } timed{start, stats.dispatch_ns};
@@ -242,7 +242,7 @@ index d0506731..d4704b95 100644
      t_timed = false; // OPT-001: the phase timers are the draws'
      r.scheduler.PopPendingOperations();
      const auto& cs_program = r.liverpool->DrawCsRegs();
-@@ -5762,6 +5869,17 @@ void NativeRenderer::DispatchDirect() {
+@@ -5939,6 +6046,17 @@ void NativeRenderer::DispatchDirect() {
      ReadFillShader(pipeline->GetStage(Shader::SwStage::Compute), b); // NAT-120
      PrepareImages();
      GlobalBarrier();
@@ -260,7 +260,7 @@ index d0506731..d4704b95 100644
      const CmdBuf cmdbuf{s.cmd};
      bool transferred = false;
      const auto& cs = pipeline->GetStage(Shader::SwStage::Compute);
-@@ -5803,6 +5921,8 @@ void NativeRenderer::DispatchDirect() {
+@@ -5980,6 +6098,8 @@ void NativeRenderer::DispatchDirect() {
              cs.pgm_hash, cs_program.dim_x, u64(cs_program.dim_y) << 32 | cs_program.dim_z);
          cmdbuf.dispatch(cs_program.dim_x, cs_program.dim_y, cs_program.dim_z);
      }
@@ -269,7 +269,7 @@ index d0506731..d4704b95 100644
      NoteWrites(nullptr, b);
      if (Native::g_dump_request.exchange(false)) {
          r.StartFrameDumpNow(); // FIX-156 (diagnosis): a watched fill
-@@ -5816,6 +5936,8 @@ void NativeRenderer::DispatchDirect() {
+@@ -5993,6 +6113,8 @@ void NativeRenderer::DispatchDirect() {
  
  void NativeRenderer::DispatchIndirect(VAddr address, u32 offset, u32 size) {
      std::scoped_lock lock{mutex};
@@ -278,7 +278,7 @@ index d0506731..d4704b95 100644
      t_timed = false; // OPT-001
      r.scheduler.PopPendingOperations();
      const ComputePipeline* pipeline = r.AcquireComputePipeline();
-@@ -5848,7 +5970,26 @@ void NativeRenderer::DispatchIndirect(VAddr address, u32 offset, u32 size) {
+@@ -6025,7 +6147,26 @@ void NativeRenderer::DispatchIndirect(VAddr address, u32 offset, u32 size) {
          cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline->Handle());
      });
      PushBindings(*pipeline, vk::PipelineBindPoint::eCompute, b);
@@ -305,7 +305,7 @@ index d0506731..d4704b95 100644
      NoteWrites(nullptr, b);
      s.buffers_written = true;
      ++stats.dispatches;
-@@ -6999,6 +7140,7 @@ void NativeRenderer::DumpFrame(const std::filesystem::path& dir) {
+@@ -7187,6 +7328,7 @@ void NativeRenderer::DumpFrame(const std::filesystem::path& dir) {
          std::unique_ptr<Native::Rhi::Buffer> buffer;
          u64 size;
          u32 index;
@@ -313,7 +313,7 @@ index d0506731..d4704b95 100644
      };
      std::vector<Readback> readbacks;
      Stream& s = Begin();
-@@ -7070,53 +7212,52 @@ void NativeRenderer::DumpFrame(const std::filesystem::path& dir) {
+@@ -7258,47 +7400,46 @@ void NativeRenderer::DumpFrame(const std::filesystem::path& dir) {
              std::fclose(file);
          }
      }
@@ -366,7 +366,9 @@ index d0506731..d4704b95 100644
 +        if(!entry->image)continue;
 +        const auto& desc=entry->image->Desc();
 +        const bool block=entry->info.props.is_block;
-+        const u32 unit=entry->info.props.is_depth?(u32(desc.format)==u32(vk::Format::eD16Unorm)?2u:4u):std::max(entry->info.num_bits/8,1u);
++        const auto format=static_cast<vk::Format>(desc.format);
++        const bool d16=format==vk::Format::eD16Unorm || format==vk::Format::eD16UnormS8Uint;
++        const u32 unit=entry->info.props.is_depth?(d16?2u:4u):std::max(entry->info.num_bits/8,1u);
 +        const u32 layers=desc.dim==Native::Rhi::ImageDim::D3?1u:std::max(desc.layers,1u);
 +        for(u32 mip=0;mip<std::min(desc.mips,32u);++mip){
 +            const auto l=SceneTrace::Layout(desc.width,desc.height,desc.dim==Native::Rhi::ImageDim::D3?desc.depth:1u,layers,mip,unit,block);
@@ -398,6 +400,8 @@ index d0506731..d4704b95 100644
 +    s.cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount=1,.pMemoryBarriers=&trace_to_host});
      Splice();
      r.scheduler.Finish();
+     if (!g_pixel_trace.hashes.empty()) {
+@@ -7317,7 +7458,9 @@ void NativeRenderer::DumpFrame(const std::filesystem::path& dir) {
      for (const auto& readback : readbacks) {
          const auto& info = readback.entry->info;
          const auto& desc = readback.entry->image->Desc();
@@ -408,7 +412,7 @@ index d0506731..d4704b95 100644
          if (std::FILE* file = std::fopen(path.string().c_str(), "wb")) {
              std::fwrite(readback.buffer->Mapped(), 1, readback.size, file);
              std::fclose(file);
-@@ -7124,6 +7265,15 @@ void NativeRenderer::DumpFrame(const std::filesystem::path& dir) {
+@@ -7325,6 +7468,15 @@ void NativeRenderer::DumpFrame(const std::filesystem::path& dir) {
      }
      LOG_WARNING(Render_Vulkan, "NAT-116: {} render targets and textures of the frame dumped to {}",
                  readbacks.size(), dir.string());

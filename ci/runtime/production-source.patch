@@ -1,6 +1,6 @@
-diff --git a/b/ryty_gpu/native/descriptor_pool_reuse.h b/ryty_gpu/native/descriptor_pool_reuse.h
+diff --git a/ryty_gpu/native/descriptor_pool_reuse.h b/ryty_gpu/native/descriptor_pool_reuse.h
 new file mode 100644
-index 0000000..e9824a0
+index 00000000..e9824a0d
 --- /dev/null
 +++ b/ryty_gpu/native/descriptor_pool_reuse.h
 @@ -0,0 +1,19 @@
@@ -24,7 +24,7 @@ index 0000000..e9824a0
 +}
 +}
 diff --git a/ryty_gpu/native/descriptor_update_batch.h b/ryty_gpu/native/descriptor_update_batch.h
-index 0d9fb26..cd72935 100644
+index 0d9fb26d..cd729350 100644
 --- a/ryty_gpu/native/descriptor_update_batch.h
 +++ b/ryty_gpu/native/descriptor_update_batch.h
 @@ -5,9 +5,9 @@ namespace Native {
@@ -40,9 +40,9 @@ index 0d9fb26..cd72935 100644
  }
  // All new sets are updated before recording any bind. Updating a set after it
  // was bound would invalidate a command buffer without UPDATE_AFTER_BIND.
-diff --git a/b/ryty_gpu/native/epoch_lookup_memo.h b/ryty_gpu/native/epoch_lookup_memo.h
+diff --git a/ryty_gpu/native/epoch_lookup_memo.h b/ryty_gpu/native/epoch_lookup_memo.h
 new file mode 100644
-index 0000000..c15680c
+index 00000000..c15680c4
 --- /dev/null
 +++ b/ryty_gpu/native/epoch_lookup_memo.h
 @@ -0,0 +1,42 @@
@@ -89,7 +89,7 @@ index 0000000..c15680c
 +};
 +}
 diff --git a/ryty_gpu/native/image_registry.cpp b/ryty_gpu/native/image_registry.cpp
-index 61b77b2..f3f9a9a 100644
+index 61b77b2b..f3f9a9a1 100644
 --- a/ryty_gpu/native/image_registry.cpp
 +++ b/ryty_gpu/native/image_registry.cpp
 @@ -861,7 +861,7 @@ void ImageRegistry::Invalidate(VAddr address, u64 size, Stale why) {
@@ -102,7 +102,7 @@ index 61b77b2..f3f9a9a 100644
              }
          }
 diff --git a/ryty_gpu/native/job_walker.cpp b/ryty_gpu/native/job_walker.cpp
-index e6d7be1..bd9bc98 100644
+index e6d7be1c..bd9bc98f 100644
 --- a/ryty_gpu/native/job_walker.cpp
 +++ b/ryty_gpu/native/job_walker.cpp
 @@ -9,6 +9,7 @@
@@ -132,9 +132,9 @@ index e6d7be1..bd9bc98 100644
  }
  
  u64 ReadablePrefix(const void* address, u64 size) {
-diff --git a/b/ryty_gpu/native/memory_range_runs.h b/ryty_gpu/native/memory_range_runs.h
+diff --git a/ryty_gpu/native/memory_range_runs.h b/ryty_gpu/native/memory_range_runs.h
 new file mode 100644
-index 0000000..1125b83
+index 00000000..1125b83e
 --- /dev/null
 +++ b/ryty_gpu/native/memory_range_runs.h
 @@ -0,0 +1,37 @@
@@ -176,7 +176,7 @@ index 0000000..1125b83
 +}
 +}
 diff --git a/src/shader_recompiler/frontend/format.cpp b/src/shader_recompiler/frontend/format.cpp
-index 57a6d7f..c91b664 100644
+index 57a6d7f5..c91b6649 100644
 --- a/src/shader_recompiler/frontend/format.cpp
 +++ b/src/shader_recompiler/frontend/format.cpp
 @@ -4372,39 +4372,39 @@ constexpr std::array<InstFormat, 1> InstructionFormatEXP = {{
@@ -237,10 +237,10 @@ index 57a6d7f..c91b664 100644
          UNREACHABLE();
      }
 diff --git a/src/video_core/amdgpu/liverpool.cpp b/src/video_core/amdgpu/liverpool.cpp
-index 8fffba5..5149328 100644
+index d2c46a13..da5dd199 100644
 --- a/src/video_core/amdgpu/liverpool.cpp
 +++ b/src/video_core/amdgpu/liverpool.cpp
-@@ -1907,7 +1907,12 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
+@@ -1931,7 +1931,12 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                  break;
              }
              case PM4ItOpcode::SetPredication: {
@@ -255,7 +255,7 @@ index 8fffba5..5149328 100644
              }
              case PM4ItOpcode::IndexType: {
 diff --git a/src/video_core/buffer_cache/direct_memory.cpp b/src/video_core/buffer_cache/direct_memory.cpp
-index fd38d08..f03261b 100644
+index fd38d083..f03261b4 100644
 --- a/src/video_core/buffer_cache/direct_memory.cpp
 +++ b/src/video_core/buffer_cache/direct_memory.cpp
 @@ -9,6 +9,8 @@
@@ -365,7 +365,7 @@ index fd38d08..f03261b 100644
      auto invalidate_coverage = imported_coverage.Invalidate();
      const VAddr end = address + size;
 diff --git a/src/video_core/cache_storage.cpp b/src/video_core/cache_storage.cpp
-index 8affbef..24d4708 100644
+index 8affbef4..24d47084 100644
 --- a/src/video_core/cache_storage.cpp
 +++ b/src/video_core/cache_storage.cpp
 @@ -12,6 +12,7 @@
@@ -461,9 +461,9 @@ index 8affbef..24d4708 100644
      return true;
  }
  
-diff --git a/b/src/video_core/deferred_task_queue.h b/src/video_core/deferred_task_queue.h
+diff --git a/src/video_core/deferred_task_queue.h b/src/video_core/deferred_task_queue.h
 new file mode 100644
-index 0000000..58a73f5
+index 00000000..58a73f59
 --- /dev/null
 +++ b/src/video_core/deferred_task_queue.h
 @@ -0,0 +1,33 @@
@@ -500,9 +500,9 @@ index 0000000..58a73f5
 +    }
 +};
 +}
-diff --git a/b/src/video_core/guest_page_domain.h b/src/video_core/guest_page_domain.h
+diff --git a/src/video_core/guest_page_domain.h b/src/video_core/guest_page_domain.h
 new file mode 100644
-index 0000000..60d15bc
+index 00000000..60d15bc6
 --- /dev/null
 +++ b/src/video_core/guest_page_domain.h
 @@ -0,0 +1,16 @@
@@ -523,7 +523,7 @@ index 0000000..60d15bc
 +}
 +}
 diff --git a/src/video_core/page_manager.cpp b/src/video_core/page_manager.cpp
-index 632d15d..6249443 100644
+index 632d15d4..6249443d 100644
 --- a/src/video_core/page_manager.cpp
 +++ b/src/video_core/page_manager.cpp
 @@ -23,6 +23,8 @@
@@ -561,9 +561,9 @@ index 632d15d..6249443 100644
      return !state || (state->num_write_watchers == 0 && state->num_read_watchers == 0 &&
                        state->num_guards == 0);
  }
-diff --git a/b/src/video_core/renderer_vulkan/bounded_read_cache.h b/src/video_core/renderer_vulkan/bounded_read_cache.h
+diff --git a/src/video_core/renderer_vulkan/bounded_read_cache.h b/src/video_core/renderer_vulkan/bounded_read_cache.h
 new file mode 100644
-index 0000000..1141279
+index 00000000..11412792
 --- /dev/null
 +++ b/src/video_core/renderer_vulkan/bounded_read_cache.h
 @@ -0,0 +1,78 @@
@@ -646,7 +646,7 @@ index 0000000..1141279
 +};
 +}
 diff --git a/src/video_core/renderer_vulkan/build_queue.h b/src/video_core/renderer_vulkan/build_queue.h
-index cc9436c..e48ec0f 100644
+index cc9436ca..e48ec0fd 100644
 --- a/src/video_core/renderer_vulkan/build_queue.h
 +++ b/src/video_core/renderer_vulkan/build_queue.h
 @@ -174,7 +174,7 @@ private:
@@ -659,7 +659,7 @@ index cc9436c..e48ec0f 100644
      }
      u32 running_heavy{};
 diff --git a/src/video_core/renderer_vulkan/compiler_worker_budget.h b/src/video_core/renderer_vulkan/compiler_worker_budget.h
-index 8a97ea6..66a31f0 100644
+index 8a97ea64..66a31f07 100644
 --- a/src/video_core/renderer_vulkan/compiler_worker_budget.h
 +++ b/src/video_core/renderer_vulkan/compiler_worker_budget.h
 @@ -1,11 +1,31 @@
@@ -694,9 +694,9 @@ index 8a97ea6..66a31f0 100644
      // Splash-screen work may use every logical processor; gameplay stays bounded.
      static constexpr unsigned StartupPipelineWorkers(unsigned logical) {
          return std::max(1u, logical);
-diff --git a/b/src/video_core/renderer_vulkan/fragment_multisample_key.h b/src/video_core/renderer_vulkan/fragment_multisample_key.h
+diff --git a/src/video_core/renderer_vulkan/fragment_multisample_key.h b/src/video_core/renderer_vulkan/fragment_multisample_key.h
 new file mode 100644
-index 0000000..93507c1
+index 00000000..93507c1d
 --- /dev/null
 +++ b/src/video_core/renderer_vulkan/fragment_multisample_key.h
 @@ -0,0 +1,23 @@
@@ -723,9 +723,9 @@ index 0000000..93507c1
 +    }
 +}
 +}
-diff --git a/b/src/video_core/renderer_vulkan/idle_compile_queue.h b/src/video_core/renderer_vulkan/idle_compile_queue.h
+diff --git a/src/video_core/renderer_vulkan/idle_compile_queue.h b/src/video_core/renderer_vulkan/idle_compile_queue.h
 new file mode 100644
-index 0000000..5ec4945
+index 00000000..5ec49456
 --- /dev/null
 +++ b/src/video_core/renderer_vulkan/idle_compile_queue.h
 @@ -0,0 +1,52 @@
@@ -781,9 +781,9 @@ index 0000000..5ec4945
 +    std::thread worker;
 +};
 +}
-diff --git a/b/src/video_core/renderer_vulkan/pipeline_cleanup_worker.h b/src/video_core/renderer_vulkan/pipeline_cleanup_worker.h
+diff --git a/src/video_core/renderer_vulkan/pipeline_cleanup_worker.h b/src/video_core/renderer_vulkan/pipeline_cleanup_worker.h
 new file mode 100644
-index 0000000..33e0c7a
+index 00000000..33e0c7af
 --- /dev/null
 +++ b/src/video_core/renderer_vulkan/pipeline_cleanup_worker.h
 @@ -0,0 +1,59 @@
@@ -847,7 +847,7 @@ index 0000000..33e0c7a
 +};
 +}
 diff --git a/src/video_core/renderer_vulkan/pipeline_retention_budget.h b/src/video_core/renderer_vulkan/pipeline_retention_budget.h
-index 95f3115..27433d0 100644
+index 95f3115e..27433d00 100644
 --- a/src/video_core/renderer_vulkan/pipeline_retention_budget.h
 +++ b/src/video_core/renderer_vulkan/pipeline_retention_budget.h
 @@ -4,7 +4,7 @@
@@ -860,7 +860,7 @@ index 95f3115..27433d0 100644
  }
  } // namespace Vulkan
 diff --git a/src/video_core/renderer_vulkan/prepared_descriptor_key.h b/src/video_core/renderer_vulkan/prepared_descriptor_key.h
-index 5ceec8f..0fe114b 100644
+index 5ceec8f4..0fe114b9 100644
 --- a/src/video_core/renderer_vulkan/prepared_descriptor_key.h
 +++ b/src/video_core/renderer_vulkan/prepared_descriptor_key.h
 @@ -23,39 +23,64 @@ struct PreparedDescriptorKey {
@@ -966,9 +966,9 @@ index 5ceec8f..0fe114b 100644
              if constexpr (Hash) {
                  hash ^= WordHash(words[patch.word], patch.word);
                  hash ^= WordHash(words[patch.word + 1], patch.word + 1);
-diff --git a/b/src/video_core/renderer_vulkan/resident_prt_view.h b/src/video_core/renderer_vulkan/resident_prt_view.h
+diff --git a/src/video_core/renderer_vulkan/resident_prt_view.h b/src/video_core/renderer_vulkan/resident_prt_view.h
 new file mode 100644
-index 0000000..22d652e
+index 00000000..22d652ef
 --- /dev/null
 +++ b/src/video_core/renderer_vulkan/resident_prt_view.h
 @@ -0,0 +1,77 @@
@@ -1049,9 +1049,9 @@ index 0000000..22d652e
 +    return true;
 +}
 +}
-diff --git a/b/src/video_core/renderer_vulkan/shared_pipeline_policy.h b/src/video_core/renderer_vulkan/shared_pipeline_policy.h
+diff --git a/src/video_core/renderer_vulkan/shared_pipeline_policy.h b/src/video_core/renderer_vulkan/shared_pipeline_policy.h
 new file mode 100644
-index 0000000..d58719b
+index 00000000..d58719b1
 --- /dev/null
 +++ b/src/video_core/renderer_vulkan/shared_pipeline_policy.h
 @@ -0,0 +1,52 @@
@@ -1108,7 +1108,7 @@ index 0000000..d58719b
 +};
 +}
 diff --git a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
-index f588a39..6d5df7c 100644
+index 73725982..174e5133 100644
 --- a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
 +++ b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
 @@ -30,6 +30,9 @@
@@ -1243,7 +1243,7 @@ index f588a39..6d5df7c 100644
  
      const vk::PushConstantRange push_constants = {
          .stageFlags = AllGraphicsStageBits,
-@@ -790,10 +766,9 @@ GraphicsPipeline::GraphicsPipeline(
+@@ -791,10 +767,9 @@ GraphicsPipeline::GraphicsPipeline(
      // In practice, we use dynamic state for all of it.
      constexpr vk::PipelineDepthStencilStateCreateInfo depth_stencil_info = {};
  
@@ -1257,7 +1257,7 @@ index f588a39..6d5df7c 100644
      const vk::GraphicsPipelineCreateInfo pipeline_info = {
          .pNext = &pipeline_rendering_ci,
          .flags = tessellated && plain_tessellated ? vk::PipelineCreateFlagBits::eDisableOptimization
-@@ -817,29 +792,26 @@ GraphicsPipeline::GraphicsPipeline(
+@@ -818,29 +793,26 @@ GraphicsPipeline::GraphicsPipeline(
      // Stored ordinary pipelines use the same shared stage libraries and fast link as draws.
      // Whole-pipeline prewarm recompiles both stages for every target/blend permutation and
      // does not populate the stage-library cache used when new runtime permutations appear.
@@ -1302,7 +1302,7 @@ index f588a39..6d5df7c 100644
          library_link = std::make_unique<LibraryLink>();
          boost::container::static_vector<vk::PipelineShaderStageCreateInfo, MaxShaderStages>
              pre_raster_stages;
-@@ -893,8 +865,8 @@ GraphicsPipeline::GraphicsPipeline(
+@@ -894,8 +866,8 @@ GraphicsPipeline::GraphicsPipeline(
              auto& part_info = part_infos[i];
              part_info = pipeline_info;
              part_info.pNext = &library_infos[i];
@@ -1313,7 +1313,7 @@ index f588a39..6d5df7c 100644
                  part_info.flags |= vk::PipelineCreateFlagBits::eRetainLinkTimeOptimizationInfoEXT;
              }
              part_info.stageCount = 0;
-@@ -910,6 +882,9 @@ GraphicsPipeline::GraphicsPipeline(
+@@ -911,6 +883,9 @@ GraphicsPipeline::GraphicsPipeline(
              }
          }
          const auto create_library = [&](size_t i) {
@@ -1323,7 +1323,7 @@ index f588a39..6d5df7c 100644
              BuildWatch part_watch{debug_str, i == 1 ? "pre-raster library"
                                               : i == 2 ? "fragment library"
                                                        : "interface library"};
-@@ -924,6 +899,8 @@ GraphicsPipeline::GraphicsPipeline(
+@@ -925,6 +900,8 @@ GraphicsPipeline::GraphicsPipeline(
          // PERF-018: the shader libraries are keyed by everything their create info reads: the
          // layout's bindings, the stage modules, and the state of their pipeline subset.
          LibraryKey pre_raster_key{1};
@@ -1332,7 +1332,7 @@ index f588a39..6d5df7c 100644
          // SHD-002: the sets of the pre-rasterization stages only.
          for (u32 set = 0; set < num_sets; ++set) {
              if (set != Shader::Backend::StageSet(u32(Shader::SwStage::Fragment))) {
-@@ -946,20 +923,15 @@ GraphicsPipeline::GraphicsPipeline(
+@@ -947,20 +924,15 @@ GraphicsPipeline::GraphicsPipeline(
          }
  
          LibraryKey fragment_key{2};
@@ -1357,7 +1357,7 @@ index f588a39..6d5df7c 100644
          fragment_key.Add(pipeline_rendering_ci.viewMask);
          for (const auto state : dynamic_states) {
              fragment_key.Add(state);
-@@ -974,25 +946,31 @@ GraphicsPipeline::GraphicsPipeline(
+@@ -975,25 +947,31 @@ GraphicsPipeline::GraphicsPipeline(
          auto fragment_owner = share_libraries ? library_cache.Find(device, fragment_hash) : nullptr;
          vk::Pipeline pre_raster_library = pre_raster_owner ? **pre_raster_owner : vk::Pipeline{};
          vk::Pipeline fragment_library = fragment_owner ? **fragment_owner : vk::Pipeline{};
@@ -1397,7 +1397,7 @@ index f588a39..6d5df7c 100644
          library_link->shared_libraries = {pre_raster_owner, fragment_owner};
          library_handles[1] = pre_raster_library;
          library_handles[2] = fragment_library;
-@@ -1006,6 +984,7 @@ GraphicsPipeline::GraphicsPipeline(
+@@ -1007,6 +985,7 @@ GraphicsPipeline::GraphicsPipeline(
          };
          const vk::GraphicsPipelineCreateInfo link_info = {
              .pNext = &link_libraries,
@@ -1405,7 +1405,7 @@ index f588a39..6d5df7c 100644
              .layout = *pipeline_layout,
          };
          auto [link_result, linked] = device.createGraphicsPipelineUnique(pipeline_cache, link_info);
-@@ -1028,21 +1007,34 @@ GraphicsPipeline::GraphicsPipeline(
+@@ -1029,21 +1008,34 @@ GraphicsPipeline::GraphicsPipeline(
                      .count());
          }
  
@@ -1449,7 +1449,7 @@ index f588a39..6d5df7c 100644
              const vk::PipelineLibraryCreateInfoKHR libraries_info = {
                  .libraryCount = static_cast<u32>(library_handles.size()),
                  .pLibraries = library_handles.data(),
-@@ -1069,11 +1061,15 @@ GraphicsPipeline::GraphicsPipeline(
+@@ -1070,11 +1062,15 @@ GraphicsPipeline::GraphicsPipeline(
                              "SHD-001: {} optimized links done, {:.1f} s of driver compiling",
                              links, total_us / 1e6);
              }
@@ -1467,7 +1467,7 @@ index f588a39..6d5df7c 100644
      if (!preloading) {
          whole_watch.emplace(debug_str, "whole pipeline compile");
 diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
-index 3c085d4..9e1872e 100644
+index fae2f689..47fb5e45 100644
 --- a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
 +++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
 @@ -1,3 +1,6 @@
@@ -1726,22 +1726,21 @@ index 3c085d4..9e1872e 100644
  }
  
  std::shared_ptr<PipelineCache::PipelineBuild> PipelineCache::StartPipelineBuild(bool urgent) {
-@@ -2037,19 +2166,13 @@ std::chrono::microseconds PipelineCache::QuickWait() {
+@@ -2037,21 +2166,10 @@ std::chrono::microseconds PipelineCache::QuickWait() {
  }
  
  bool PipelineCache::MenusWait() {
--    // Keep going: rendering must not wait for a cosmetic pipeline.
--    if (CompileMode() == 2) return false;
+-    // FIX-219: this holds in the asynchronous compile mode (2, the default) too. Skipping menu
+-    // draws there left the car thumbnails black: the car list, the garage and a new save's gift
+-    // car draw each thumbnail once into a texture they keep showing. SHADGT_ASYNC_MENUS=1 still
+-    // skips them for animated menus.
 -    // FIX-110: in GT Sport's menus a draw waits for its new pipeline (the guest clocks are held
 -    // meanwhile, as in the "pause" compile mode); only races skip draws. Some menu scenes draw
 -    // once into a texture they keep showing: the GR86 slide of the home screen played on black
 -    // instead of the Fuji pit straight when its scenery draws were skipped while they built.
 -    // -DisablePerf 134 skips in the menus too.
-+    // Menu rendering includes one-shot car thumbnails and their intermediate
-+    // reflection/lighting passes. A skipped compile cannot be repaired by a
-+    // later frame after the CPU has encoded that image. Keep the recorder at
-+    // the dependent draw while compiler workers finish; do not suspend them.
-+    // This correctness rule precedes every cosmetic compile-mode override.
++    // Menu rendering includes one-shot thumbnails; keep the recorder at the
++    // dependent draw while compiler workers finish, regardless of compile mode.
  #ifdef RYTY_GPU
 -    if (AsyncMenuPipelines()) {
 -        return false;
@@ -1752,7 +1751,7 @@ index 3c085d4..9e1872e 100644
  #else
      return false;
  #endif
-@@ -2076,7 +2199,9 @@ void PipelineCache::QueueBackgroundBuild(const std::shared_ptr<PipelineBuild>& b
+@@ -2078,7 +2196,9 @@ void PipelineCache::QueueBackgroundBuild(const std::shared_ptr<PipelineBuild>& b
          }
          ++g_precompile_done; // PERF-098
      }, Common::PerfFeatureEnabled(79) &&
@@ -1763,7 +1762,7 @@ index 3c085d4..9e1872e 100644
  }
  
  void PipelineCache::ReadAheadAtBufferStart() {
-@@ -2183,6 +2308,9 @@ void PipelineCache::ReadAhead(const DrawIndirectParams params, bool restore) {
+@@ -2185,6 +2305,9 @@ void PipelineCache::ReadAhead(const DrawIndirectParams params, bool restore) {
      }
  }
  
@@ -1773,7 +1772,7 @@ index 3c085d4..9e1872e 100644
  void PipelineCache::BuildQueuedStates(const DrawIndirectParams params, bool restore) {
      auto* states = liverpool->PipeReadAheadStates();
      if (!states || states->Empty()) {
-@@ -2198,10 +2326,28 @@ void PipelineCache::BuildQueuedStates(const DrawIndirectParams params, bool rest
+@@ -2200,10 +2323,28 @@ void PipelineCache::BuildQueuedStates(const DrawIndirectParams params, bool rest
      const bool key_was_legacy = S().key_uses_legacy; // D10: made again the same way below
      u32 evaluated = 0;
      u32 started = 0;
@@ -1805,7 +1804,7 @@ index 3c085d4..9e1872e 100644
             states->Take(queued_state_regs->reg_array)) {
          ++evaluated;
          regs_override = queued_state_regs.get();
-@@ -2229,14 +2375,8 @@ void PipelineCache::BuildQueuedStates(const DrawIndirectParams params, bool rest
+@@ -2231,14 +2372,8 @@ void PipelineCache::BuildQueuedStates(const DrawIndirectParams params, bool rest
          // PERF-038: the game needs pipelines; background builds wait.
          build_workers->PauseBackground(std::chrono::steady_clock::now() + std::chrono::seconds{2});
      }
@@ -1822,7 +1821,7 @@ index 3c085d4..9e1872e 100644
      auto& stats = queued_state_stats;
      const auto now = std::chrono::steady_clock::now();
      stats.evaluated += evaluated;
-@@ -2256,7 +2396,20 @@ void PipelineCache::BuildQueuedStates(const DrawIndirectParams params, bool rest
+@@ -2258,7 +2393,20 @@ void PipelineCache::BuildQueuedStates(const DrawIndirectParams params, bool rest
  
  void PipelineCache::WaitForBuild(PipelineBuild& build, const DrawIndirectParams params) {
      using namespace std::chrono_literals;
@@ -1844,7 +1843,7 @@ index 3c085d4..9e1872e 100644
      // An urgent build goes to the front of the compiler queue. While it is pending this
      // thread can discover more builds, but it never claims a compiler job itself.
      if (build.urgent) {
-@@ -2266,7 +2419,7 @@ void PipelineCache::WaitForBuild(PipelineBuild& build, const DrawIndirectParams
+@@ -2268,7 +2416,7 @@ void PipelineCache::WaitForBuild(PipelineBuild& build, const DrawIndirectParams
          }
      }
      while (build.done.wait_for(500us) != std::future_status::ready) {
@@ -1853,7 +1852,7 @@ index 3c085d4..9e1872e 100644
      }
  #ifdef RYTY_GPU
      // PERF-101: GPU.compile_batch_ms (launcher "Shader compile batching"): with the game paused
-@@ -2354,7 +2507,7 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
+@@ -2356,7 +2504,7 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
      }
      // D10: a key of new translations whose pipeline is not built yet. It is built in the
      // background; meanwhile the draw uses the key made of the old renderer's translations.
@@ -1862,7 +1861,7 @@ index 3c085d4..9e1872e 100644
          !graphics_pipelines.contains(S().graphics_key)) {
          const auto pending = pending_builds.find(S().graphics_key);
          const bool ready = pending != pending_builds.end() &&
-@@ -3295,14 +3448,15 @@ vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::Runtim
+@@ -3300,14 +3448,15 @@ vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::Runtim
              .count(),
          spv.size());
  
@@ -1880,7 +1879,7 @@ index 3c085d4..9e1872e 100644
      return module;
  }
  
-@@ -3397,8 +3551,8 @@ struct PipelineCache::PrewarmRecord {
+@@ -3402,8 +3551,8 @@ struct PipelineCache::PrewarmRecord {
      GraphicsPipeline::SerializationSupport sdata{};
      std::array<u64, MaxShaderStages> pgm{};
      std::array<size_t, MaxShaderStages> perm{};
@@ -1891,7 +1890,7 @@ index 3c085d4..9e1872e 100644
  };
  
  void PipelineCache::PrewarmRead(std::stop_token stop) {
-@@ -3455,6 +3609,12 @@ void PipelineCache::PrewarmRead(std::stop_token stop) {
+@@ -3460,6 +3609,12 @@ void PipelineCache::PrewarmRead(std::stop_token stop) {
      const size_t window = std::max<size_t>(32, size_t{readers} * 2);
      LOG_INFO(Render_Vulkan, "PRECOMPILE-READ: {} file readers, {}-record window", readers, window);
      u64 skipped = 0;
@@ -1904,7 +1903,7 @@ index 3c085d4..9e1872e 100644
      const bool complete = OrderedParallelRead(keys.size(), readers, window, stop,
        [&](size_t index) {
          const auto& name = keys[index].first;
-@@ -3473,28 +3633,45 @@ void PipelineCache::PrewarmRead(std::stop_token stop) {
+@@ -3478,28 +3633,45 @@ void PipelineCache::PrewarmRead(std::stop_token stop) {
                  if (perm_hash == 0) {
                      continue;
                  }
@@ -1962,7 +1961,7 @@ index 3c085d4..9e1872e 100644
              }
          } catch (const std::exception&) {
              // RecoverableFailure, or a corrupt entry (std::bitset rejects bad text).
-@@ -3600,10 +3777,12 @@ void PipelineCache::InstallPrewarmed(bool force) {
+@@ -3605,10 +3777,12 @@ void PipelineCache::InstallPrewarmed(bool force) {
  
  bool PipelineCache::InstallPrewarmRecord(PrewarmRecord& record) {
      for (auto& listing : record.listings) {
@@ -1977,7 +1976,7 @@ index 3c085d4..9e1872e 100644
          }
      }
      if (graphics_pipelines.contains(record.key) || pending_builds.contains(record.key)) {
-@@ -3628,10 +3807,10 @@ bool PipelineCache::InstallPrewarmRecord(PrewarmRecord& record) {
+@@ -3633,10 +3807,10 @@ bool PipelineCache::InstallPrewarmRecord(PrewarmRecord& record) {
          }
          if (permutation.stored) {
              // The same SPIR-V a draw's first use would load (PERF-032), read on the reader thread.
@@ -1990,7 +1989,7 @@ index 3c085d4..9e1872e 100644
              permutation.stored = false;
          }
          if (!permutation.module) {
-@@ -4959,7 +5138,7 @@ PipelineCache::Result PipelineCache::GetProgramImpl(HwStage hw_stage, SwStage sw
+@@ -4964,7 +5138,7 @@ PipelineCache::Result PipelineCache::GetProgramImpl(HwStage hw_stage, SwStage sw
          // D10: the new translation is made on a worker; meanwhile the draw's key is made of the
          // old renderer's translations (GetGraphicsPipeline / GetComputePipeline). Without them,
          // the usual way (fallback_nested).
@@ -1999,7 +1998,7 @@ index 3c085d4..9e1872e 100644
              if (QueueTranslation(hw_stage, sw_stage, params, runtime_info, binding, true)) {
                  ++legacy_stats.queued;
              }
-@@ -5190,7 +5369,7 @@ std::shared_ptr<const void> PipelineCache::KeepAlive(const ComputePipeline* pipe
+@@ -5195,7 +5369,7 @@ std::shared_ptr<const void> PipelineCache::KeepAlive(const ComputePipeline* pipe
  void PipelineCache::TrimUnusedPipelines() {
      using namespace std::chrono;
      const auto now = steady_clock::now();
@@ -2008,7 +2007,7 @@ index 3c085d4..9e1872e 100644
      retention_last_scan = now;
      // Retain reusable pipelines until the live device-local budget needs headroom.
      // VMA allocation totals omit driver-owned pipeline memory; query the driver.
-@@ -5218,9 +5397,10 @@ void PipelineCache::TrimUnusedPipelines() {
+@@ -5223,9 +5397,10 @@ void PipelineCache::TrimUnusedPipelines() {
      if (!lock.owns_lock()) return;
      retention_now = now;
      if (!under_pressure) return;
@@ -2021,7 +2020,7 @@ index 3c085d4..9e1872e 100644
      std::vector<std::shared_ptr<const void>> retired;
      const auto trim = [&](auto& cache) {
          using Entry = typename std::remove_reference_t<decltype(cache)>::value_type;
-@@ -5251,9 +5431,15 @@ void PipelineCache::TrimUnusedPipelines() {
+@@ -5256,9 +5431,15 @@ void PipelineCache::TrimUnusedPipelines() {
      if (retired.empty()) return;
      const auto count = retired.size();
      // Includes commands already recorded in the current, not-yet-submitted batch.
@@ -2040,7 +2039,7 @@ index 3c085d4..9e1872e 100644
               graphics_pipelines.size() + compute_pipelines.size());
  }
 diff --git a/src/video_core/renderer_vulkan/vk_pipeline_common.cpp b/src/video_core/renderer_vulkan/vk_pipeline_common.cpp
-index ae9e466..902007f 100644
+index ae9e4665..902007f7 100644
 --- a/src/video_core/renderer_vulkan/vk_pipeline_common.cpp
 +++ b/src/video_core/renderer_vulkan/vk_pipeline_common.cpp
 @@ -3,6 +3,8 @@
@@ -2095,7 +2094,7 @@ index ae9e466..902007f 100644
  
  std::string Pipeline::GetDebugString() const {
 diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
-index 3c61796..61f9b79 100644
+index 50cbf46a..fb1d6e72 100644
 --- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
 +++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
 @@ -51,6 +51,9 @@
@@ -2148,10 +2147,11 @@ index 3c61796..61f9b79 100644
      auto& stats = select_stats;
      const auto now = std::chrono::steady_clock::now();
 diff --git a/src/video_core/renderer_vulkan/vk_rasterizer_native.cpp b/src/video_core/renderer_vulkan/vk_rasterizer_native.cpp
-index ba7bef4..e26b3a6 100644
+index 9fda494b..0e7988c4 100644
 --- a/src/video_core/renderer_vulkan/vk_rasterizer_native.cpp
 +++ b/src/video_core/renderer_vulkan/vk_rasterizer_native.cpp
-@@ -1,3 +1,7 @@
+@@ -1,4 +1,8 @@
+ #include "ryty_gpu/native/cpu_stack_registry.h"
 +#include "video_core/renderer_vulkan/vk_scheduler.h"
 +#include "video_core/renderer_vulkan/resident_prt_view.h"
 +#include "ryty_gpu/native/descriptor_pool_reuse.h"
@@ -2159,7 +2159,7 @@ index ba7bef4..e26b3a6 100644
  #include "ryty_gpu/native/descriptor_update_batch.h"
  #include "ryty_gpu/native/upload_phase_trace.h"
  #include "ryty_gpu/native/region_init_gaps.h"
-@@ -87,6 +91,8 @@ thread_local u64 descriptor_hash_reused = 0;
+@@ -89,6 +93,8 @@ thread_local u64 descriptor_hash_reused = 0;
  thread_local u64 descriptor_hash_refreshed = 0;
  
  using FlatUploadMemo = ImmutableUploadMemo<vk::DescriptorBufferInfo, Shader::MaxStageTypes>;
@@ -2168,7 +2168,7 @@ index ba7bef4..e26b3a6 100644
  FlatUploadMemo& UploadMemoFor(const NativeRenderer* renderer) {
      struct Local { const NativeRenderer* owner{}; FlatUploadMemo memo; };
      static thread_local Local local;
-@@ -407,7 +413,7 @@ void NativeRenderer::DrawBindings::PrepareDescriptorKeys(const Pipeline& pipelin
+@@ -409,7 +415,7 @@ void NativeRenderer::DrawBindings::PrepareDescriptorKeys(const Pipeline& pipelin
      if (!groups_ready) PrepareWriteGroups();
      for (u32 set = 0; set < grouped_writes.size(); ++set) {
          if (grouped_writes[set].empty() || set == pipeline.PushSet()) continue;
@@ -2177,7 +2177,7 @@ index ba7bef4..e26b3a6 100644
          auto& key = descriptor_keys[set];
          if (key.cacheable) key.hash = XXH3_64bits(key.words.data(), key.words.size() * sizeof(u64));
      }
-@@ -626,6 +632,7 @@ void NativeRenderer::FinishNativeFsr(const Targets& targets) {
+@@ -628,6 +634,7 @@ void NativeRenderer::FinishNativeFsr(const Targets& targets) {
  }
  
  NativeRenderer::NativeRenderer(Rasterizer& rasterizer) : r{rasterizer} {
@@ -2185,7 +2185,7 @@ index ba7bef4..e26b3a6 100644
      device = Native::Rhi::CreateVulkanDevice(r.instance);
      ASSERT_MSG(device, "NAT-100: no native device");
      const VkSemaphore semaphore = r.scheduler.GetWorkSemaphore()->Handle();
-@@ -878,6 +885,7 @@ NativeRenderer::NativeRenderer(Rasterizer& rasterizer) : r{rasterizer} {
+@@ -880,6 +887,7 @@ NativeRenderer::NativeRenderer(Rasterizer& rasterizer) : r{rasterizer} {
  
  NativeRenderer::~NativeRenderer() {
      mirror_preparation.reset(); // Join before any device or direct-memory teardown.
@@ -2193,7 +2193,7 @@ index ba7bef4..e26b3a6 100644
      std::scoped_lock lock{mutex};
      const vk::Device vk_device = r.instance.GetDevice();
      for (const auto pool : free_pools) {
-@@ -1091,12 +1099,17 @@ vk::Sampler NativeRenderer::SamplerFor(const AmdGpu::Sampler& sharp,
+@@ -1093,12 +1101,17 @@ vk::Sampler NativeRenderer::SamplerFor(const AmdGpu::Sampler& sharp,
                                         AmdGpu::BorderColorBuffer border, bool is_depth) {
      const u64 hash = XXH3_64bits(&sharp, sizeof(sharp)) ^
                       (is_depth ? 0x9E3779B97F4A7C15ULL : 0) ^ (u64(border.Address()) << 1);
@@ -2212,7 +2212,7 @@ index ba7bef4..e26b3a6 100644
  }
  
  NativeRenderer::Stream& NativeRenderer::Begin() {
-@@ -1438,19 +1451,16 @@ vk::DescriptorBufferInfo NativeRenderer::UploadFlatData(u32 stage, const u8* sou
+@@ -1440,19 +1453,16 @@ vk::DescriptorBufferInfo NativeRenderer::UploadFlatData(u32 stage, const u8* sou
  
  vk::DescriptorPool NativeRenderer::TakeDescriptorPool() {
      const vk::Device vk_device = r.instance.GetDevice();
@@ -2240,7 +2240,7 @@ index ba7bef4..e26b3a6 100644
      }
      static constexpr std::array<vk::DescriptorPoolSize, 4> sizes{{
          {vk::DescriptorType::eStorageBuffer, 8192},
-@@ -3143,11 +3153,15 @@ void NativeRenderer::BindTextures(const Shader::Info& stage, const AmdGpu::Regs&
+@@ -3219,11 +3229,15 @@ void NativeRenderer::BindTextures(const Shader::Info& stage, const AmdGpu::Regs&
              bind_null(3);
              continue;
          }
@@ -2258,7 +2258,7 @@ index ba7bef4..e26b3a6 100644
              static std::atomic<u32> logged{};
              if (logged.fetch_add(1, std::memory_order_relaxed) < 32) {
                  LOG_WARNING(Render_Vulkan,
-@@ -4078,7 +4092,7 @@ void NativeRenderer::Draw(bool is_indexed, u32 index_offset) {
+@@ -4170,7 +4184,7 @@ void NativeRenderer::Draw(bool is_indexed, u32 index_offset) {
      // OPT-010: the draw a game job thread prepared, if any.
      static const bool prepare = PrepareEnabled();
      PreparedDraw* prepared = nullptr;
@@ -2267,7 +2267,7 @@ index ba7bef4..e26b3a6 100644
          prepared = TakePrepared(Rasterizer::t_draw_packet);
          stats.prepared_missing += prepared ? 0 : 1;
      }
-@@ -4582,6 +4596,7 @@ void NativeRenderer::FreePrepared(PreparedDraw* draw) {
+@@ -4720,6 +4734,7 @@ void NativeRenderer::FreePrepared(PreparedDraw* draw) {
  }
  
  bool NativeRenderer::HasPrepared(const void* packet) {
@@ -2275,7 +2275,7 @@ index ba7bef4..e26b3a6 100644
      if (!packet) {
          return false;
      }
-@@ -4661,6 +4676,7 @@ void NativeRenderer::PrepareJobDraw(const void* packet, u32 epoch, const AmdGpu:
+@@ -4799,6 +4814,7 @@ void NativeRenderer::PrepareJobDraw(const void* packet, u32 epoch, const AmdGpu:
                                      std::shared_ptr<const void> pipeline_keepalive,
                                      std::span<const Shader::Info* const> stages, bool is_indexed,
                                      u32 index_offset) {
@@ -2283,7 +2283,7 @@ index ba7bef4..e26b3a6 100644
      const auto start = std::chrono::steady_clock::now();
      PreparedDraw* p = NewPrepared();
      p->packet = packet;
-@@ -5012,7 +5028,7 @@ bool NativeRenderer::PrepareTextures(const Shader::Info& stage, const AmdGpu::Re
+@@ -5181,7 +5197,7 @@ bool NativeRenderer::PrepareTextures(const Shader::Info& stage, const AmdGpu::Re
                  b.images.push_back({VK_NULL_HANDLE, memo.views[i], vk::ImageLayout::eGeneral});
              }
              (storage ? b.stored : b.sampled).push_back(entry);
@@ -2292,7 +2292,7 @@ index ba7bef4..e26b3a6 100644
              add_write();
              continue;
          }
-@@ -5027,11 +5043,15 @@ bool NativeRenderer::PrepareTextures(const Shader::Info& stage, const AmdGpu::Re
+@@ -5196,11 +5212,15 @@ bool NativeRenderer::PrepareTextures(const Shader::Info& stage, const AmdGpu::Re
              bind_null();
              continue;
          }

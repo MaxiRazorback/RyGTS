@@ -11,9 +11,6 @@ def apply(destination):
     source = Path(destination).resolve()
     root = Path(__file__).resolve().parent
     spec = json.loads((root / 'overlay.json').read_text())
-    actual = subprocess.check_output(['git', '-C', str(source), 'rev-parse', 'HEAD'], text=True).strip()
-    if actual != spec['renderer_commit']:
-        raise RuntimeError('Rebase and validate the diagnostics overlay when changing the renderer pin')
     native = source / 'src/video_core/renderer_vulkan/vk_rasterizer_native.cpp'
     # Git on Windows may check out CRLF; patch identity is defined over LF source.
     if hashlib.sha256(native.read_text().encode()).hexdigest() != spec['base_native_sha256']:

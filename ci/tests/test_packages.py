@@ -16,6 +16,7 @@ spec = importlib.util.spec_from_file_location('package', ROOT / 'ci/package.py')
 pkg = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(pkg)
 SHA = 'a' * 40
+RENDERER_SHA = 'b' * 40
 GUID = uuid.UUID('01234567-89ab-cdef-0123-456789abcdef')
 
 
@@ -57,11 +58,11 @@ class PackageTests(unittest.TestCase):
                     schema=1, flavor=flavor, commit=SHA, optimized=True,
                     full_symbols=bool(suffix))))
                 if target == 'renderer':
-                    (folder / 'CI-SOURCE.txt').write_text(pin['repository'] + '\n' + pin['commit'] + '\n')
+                    (folder / 'CI-SOURCE.txt').write_text(pin['repository'] + '\n' + RENDERER_SHA + '\n')
                     runtime_spec = json.loads((ROOT / 'ci/runtime/overlay.json').read_text())
                     runtime_patch = ROOT / 'ci/runtime/production-source.patch'
                     (folder / 'RUNTIME-SOURCE.json').write_text(json.dumps(dict(
-                        schema=1, renderer_commit=pin['commit'],
+                        schema=1, renderer_commit=RENDERER_SHA,
                         overlay_sha256=pkg.sha(runtime_patch), source_files=runtime_spec['source_files'])))
                 if suffix:
                     pdb = folder / (Path(binary).stem + '.pdb')
@@ -83,9 +84,10 @@ class PackageTests(unittest.TestCase):
     def test_separate_archives_symbols_defaults_and_provenance(self):
         with tempfile.TemporaryDirectory() as temp, contextlib.chdir(temp):
             base = self.fixture()
-            with patch.dict(os.environ, {'CI_COMMIT_SHA': SHA, 'RYGT_PACKAGE_BASE': str(base)}), patch.object(pkg, 'BASE_SHA', pkg.sha(base)):
+            with patch.dict(os.environ, {'CI_COMMIT_SHA': SHA, 'RYGT_PACKAGE_BASE': str(base), 'RENDERER_SHA': RENDERER_SHA}), patch.object(pkg, 'BASE_SHA', pkg.sha(base)):
                 pkg.package()
             manifest = json.loads(Path('dist/CI-PACKAGES.json').read_text())
+            self.assertEqual(manifest['renderer_commit'], RENDERER_SHA)
             self.assertEqual([v['channel'] for v in manifest['variants']], ['ci', 'debug-ci'])
             for variant in manifest['variants']:
                 archive = Path('dist') / variant['archive']
@@ -104,11 +106,46 @@ class PackageTests(unittest.TestCase):
                     self.assertEqual(info['channel'], variant['channel'])
                     self.assertEqual(info['rebuilt'], ['RyGTS.exe', 'libs/libSceVideoOut.prx'])
                     self.assertEqual(info['runtime_overlay']['renderer_commit'],
-                                     json.loads((ROOT / 'renderer/source.json').read_text())['commit'])
+                                     RENDERER_SHA)
                     for line in z.read(prefix + 'SHA256SUMS.txt').decode().splitlines():
                         digest, name = line.split('  ', 1)
                         import hashlib
                         self.assertEqual(hashlib.sha256(z.read(prefix + name)).hexdigest(), digest)
+
+    def test_both_flavors_require_expected_renderer(self):
+        with tempfile.TemporaryDirectory() as temp, contextlib.chdir(temp):
+            base = self.fixture()
+            folder = Path('artifacts/renderer-diagnostics')
+            source = folder / 'CI-SOURCE.txt'
+            lines = source.read_text().splitlines()
+            source.write_text(lines[0] + '\n' + 'c' * 40 + '\n')
+            self.rehash(folder)
+            with patch.dict(os.environ, {'CI_COMMIT_SHA': SHA, 'RYGT_PACKAGE_BASE': str(base), 'RENDERER_SHA': RENDERER_SHA}), patch.object(pkg, 'BASE_SHA', pkg.sha(base)):
+                with self.assertRaisesRegex(RuntimeError, 'Renderer source revision mismatch'):
+                    pkg.package()
+
+    def test_local_head_packages_matching_variants_without_env(self):
+        with tempfile.TemporaryDirectory() as temp, contextlib.chdir(temp):
+            base = self.fixture()
+            env = {'CI_COMMIT_SHA': SHA, 'RYGT_PACKAGE_BASE': str(base)}
+            with patch.dict(os.environ, env, clear=True), patch.object(pkg, 'BASE_SHA', pkg.sha(base)):
+                pkg.package()
+            manifest = json.loads(Path('dist/CI-PACKAGES.json').read_text())
+            self.assertEqual(manifest['renderer_commit'], RENDERER_SHA)
+
+    def test_local_head_rejects_mixed_flavors(self):
+        with tempfile.TemporaryDirectory() as temp, contextlib.chdir(temp):
+            base = self.fixture()
+            folder = Path('artifacts/renderer-diagnostics')
+            source = folder / 'CI-SOURCE.txt'; lines = source.read_text().splitlines()
+            source.write_text(lines[0] + '\n' + 'c' * 40 + '\n')
+            overlay = folder / 'RUNTIME-SOURCE.json'; value = json.loads(overlay.read_text())
+            value['renderer_commit'] = 'c' * 40; overlay.write_text(json.dumps(value))
+            self.rehash(folder)
+            env = {'CI_COMMIT_SHA': SHA, 'RYGT_PACKAGE_BASE': str(base)}
+            with patch.dict(os.environ, env, clear=True), patch.object(pkg, 'BASE_SHA', pkg.sha(base)):
+                with self.assertRaisesRegex(RuntimeError, 'Renderer revisions differ'):
+                    pkg.package()
 
     def test_missing_or_wrong_symbols_and_source_revision_rejected(self):
         for mutation in ('identity', 'missing', 'commit'):
@@ -136,7 +173,7 @@ class PackageTests(unittest.TestCase):
             overlay['overlay_sha256'] = '0' * 64
             overlay_path.write_text(json.dumps(overlay))
             self.rehash(folder)
-            with patch.dict(os.environ, {'CI_COMMIT_SHA': SHA, 'RYGT_PACKAGE_BASE': str(base)}), \
+            with patch.dict(os.environ, {'CI_COMMIT_SHA': SHA, 'RYGT_PACKAGE_BASE': str(base), 'RENDERER_SHA': RENDERER_SHA}), \
                     patch.object(pkg, 'BASE_SHA', pkg.sha(base)), \
                     self.assertRaisesRegex(RuntimeError, 'Production renderer overlay provenance mismatch'):
                 pkg.package()

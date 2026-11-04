@@ -23,6 +23,10 @@ if ($Target -eq 'Launcher') {
     $env:LIB = "$($builtins.DirectoryName);$env:LIB"
     $source = Join-Path (Get-Location) ('.ci-renderer' + $suffix)
     Invoke-Checked 'python' @('ci/prepare-renderer.py', $source)
+    $rendererIdentity = @(Get-Content -LiteralPath "$source/CI-SOURCE.txt")
+    if ($rendererIdentity.Count -ne 2 -or $rendererIdentity[1] -cnotmatch '^[0-9a-f]{40}$') { throw 'Invalid prepared renderer identity' }
+    if ($env:RENDERER_SHA -and $env:RENDERER_SHA -cne $rendererIdentity[1]) { throw 'Prepared renderer revision mismatch' }
+    $env:RENDERER_SHA = $rendererIdentity[1]
     Invoke-Checked 'python' @('ci/runtime/apply.py', $source)
     if ($Flavor -eq 'Diagnostics') { Invoke-Checked 'python' @('ci/diagnostics/apply.py', $source) }
     $configuration = if ($Flavor -eq 'Diagnostics') { 'RelWithDebInfo' } else { 'Release' }
