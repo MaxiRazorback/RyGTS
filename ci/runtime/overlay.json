@@ -1,5 +1,5 @@
 {
-  "renderer_commit": "de5c80ad6d449edfd6264d8c732cbd2e51696174",
+  "renderer_commit": "c6dd674aafa0b1ea826bee56e21fed7a113570a4",
   "source_files": {
     "ryty_gpu/native/descriptor_pool_reuse.h": {
       "baseline_sha256": null,
@@ -30,8 +30,8 @@
       "new_sha256": "8674d3b6805882c9d9a4919daa5df48727ee4e7ccce46ca3a2ff640ffb7e1898"
     },
     "src/video_core/amdgpu/liverpool.cpp": {
-      "baseline_sha256": "308f914d16a48761ab0c554151c47b5c5289f5ae278c7f4673c10ebc666fb230",
-      "new_sha256": "fe980fbc6acf6c0af30803da31d065e2e67c831b2257050a492baa295eddc434"
+      "baseline_sha256": "1065a6a43c5853339274c27865c403d023cc174f0dd1a42d492b6ba5eb099f12",
+      "new_sha256": "67369aa344dc9efc280531961f61c9694a876df027396c569e950daaf2a15650"
     },
     "src/video_core/buffer_cache/direct_memory.cpp": {
       "baseline_sha256": "a4546ef51f83f61282ddeac4689968324d7065c5a43620d9fd72f908a6d0f5e7",
@@ -94,24 +94,24 @@
       "new_sha256": "a9c9f0c1371bd5f75cf9814e562f9fe41ea634c15c714c8e145b6b6b8582a525"
     },
     "src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp": {
-      "baseline_sha256": "084cbdcf757c9901deadf10221bd5d8e622113bb445530c795b4ff47a6927b3b",
-      "new_sha256": "ec909b6aba21edd8c98d5e4b53ccfd3892e6a05c57a57c4cce979649adc25f97"
+      "baseline_sha256": "f205273a7dee656aba7e8ba3acbf4db1b94e35963d9ea3f9016fbd405746eb30",
+      "new_sha256": "8d8ea2fbac798975a2654bd37ff523e364775a139abb5898f8d7a2a5e0fd1d0c"
     },
     "src/video_core/renderer_vulkan/vk_pipeline_cache.cpp": {
-      "baseline_sha256": "9c3032aebfbd5b317920046ea40e3db10222183a98c958f7041ab77f4d7c982e",
-      "new_sha256": "756b04915afe0829d2b4758a2823d7451a34ca0d3b54675aebb1a426f881a2b6"
+      "baseline_sha256": "b41cc5dc032a34995a835773e3667a1f046c18e6dc1fb6a747a49e62525a964d",
+      "new_sha256": "984f19e9ee8c79b6370d8dab350fc7a39536b9290be29f4412e91e5a78dcd8c8"
     },
     "src/video_core/renderer_vulkan/vk_pipeline_common.cpp": {
       "baseline_sha256": "a7eb336a06b4193d9fc84f1bfba39ab5fb295b5d5b45abbc2a61a339d64ac47d",
       "new_sha256": "f61793039b0e74f7ac550c8f72fb0755dc96487232b3b9f360a698da8e312d10"
     },
     "src/video_core/renderer_vulkan/vk_rasterizer.cpp": {
-      "baseline_sha256": "630d49ef5d838c21075a10486ed796873bce398ebff62dd0000b00ba35825cce",
-      "new_sha256": "120e2f167f29132fdd323267654018357610f0cc812063a5109c21d06c92f671"
+      "baseline_sha256": "09e499996316e7a0a26123bbe17be6fd6c0d15d94c3309c03176e93ee561c3d4",
+      "new_sha256": "d76b701d134c93e2ea753f66cb2ebff1662b3e72d800a918444d6c3d74d3eee3"
     },
     "src/video_core/renderer_vulkan/vk_rasterizer_native.cpp": {
-      "baseline_sha256": "f47f0378dc7adfa245d0b32ad99e383cd53a7438aa7bdc9332948707a777a7dc",
-      "new_sha256": "6834bc3b3acb35451a9a8590617a1958ba492400b6689f2b740e8d923a1a0287"
+      "baseline_sha256": "e77df72bf8f6fdab2c998655c1b5930310225bd238aedcf56f973ed94e43b57e",
+      "new_sha256": "31ea26aa72b66475d068ff0df0a948184f9bb8efeb61d399ecfb2ad6159f5dff"
     }
   }
 }

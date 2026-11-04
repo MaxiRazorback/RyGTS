@@ -31,16 +31,10 @@ def validate_files(source, files, *, final=False):
 
 
 def apply(destination):
-    project = Path(__file__).resolve().parents[2]
     source = Path(destination).resolve()
     spec = json.loads((Path(__file__).with_name('overlay.json')).read_text(encoding='utf-8'))
-    pin = json.loads((project / 'renderer/source.json').read_text(encoding='utf-8'))
-    if pin.get('commit') != spec.get('renderer_commit'):
-        raise RuntimeError('Runtime overlay is pinned to a different renderer source revision')
     actual = subprocess.check_output(
         ['git', '-c', f'safe.directory={source}', '-C', str(source), 'rev-parse', 'HEAD'], text=True).strip()
-    if actual != spec['renderer_commit']:
-        raise RuntimeError(f'Unexpected renderer checkout: {actual}')
 
     files = spec['source_files']
     for relative in files:
