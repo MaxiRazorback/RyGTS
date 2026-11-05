@@ -41,6 +41,14 @@ target_include_directories(libc PRIVATE
 )
 
 if(BUILD_TESTING)
+    add_test_executable(guest_allocation_lookup_tests
+            ${CMAKE_CURRENT_SOURCE_DIR}/GuestAllocationLookupTests.cpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/GuestAllocations.cpp)
+    target_include_directories(guest_allocation_lookup_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_compile_features(guest_allocation_lookup_tests PRIVATE cxx_std_20)
+    configure_windows_unwind(guest_allocation_lookup_tests)
+    add_test(NAME guest_allocation_lookup COMMAND guest_allocation_lookup_tests)
+
     add_executable(log_files_tests LogFilesTests.cpp)
     target_include_directories(log_files_tests PRIVATE ${LIBS_INCLUDE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../../../../renderer)
     target_compile_features(log_files_tests PRIVATE cxx_std_20)
