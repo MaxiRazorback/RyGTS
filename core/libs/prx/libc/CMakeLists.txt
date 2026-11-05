@@ -46,7 +46,10 @@ if(BUILD_TESTING)
             ${CMAKE_CURRENT_SOURCE_DIR}/src/GuestAllocations.cpp)
     target_include_directories(guest_allocation_lookup_tests PRIVATE ${LIBS_INCLUDE_DIR})
     target_compile_features(guest_allocation_lookup_tests PRIVATE cxx_std_20)
-    configure_windows_unwind(guest_allocation_lookup_tests)
+    if(MINGW)
+        # This standalone test uses the host C++ runtime, not libc's guest unwinder.
+        target_compile_options(guest_allocation_lookup_tests PRIVATE -fasynchronous-unwind-tables)
+    endif()
     add_test(NAME guest_allocation_lookup COMMAND guest_allocation_lookup_tests)
 
     add_executable(log_files_tests LogFilesTests.cpp)
