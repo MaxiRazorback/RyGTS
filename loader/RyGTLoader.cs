@@ -2911,7 +2911,7 @@ namespace RyGT
             // 6. Shaders other players have met, prepared from this game's own files, into the
             // shader folder every RyGT folder shares.
             UsePortableShaderCache();
-            EnsureShaderCacheIdentity();
+            RequireGameClosedForShaderPreparation();
             if (File.Exists(ShaderPack))
             {
                 SetStatus("Preparing shaders from your game files (a few minutes)...");
@@ -3005,17 +3005,10 @@ namespace RyGT
         string ShaderPack { get { return Path.Combine(root, "tools", "adcpatch", "shaders.pack"); } }
         string ShaderPackStamp { get { return Path.Combine(ShaderFolder, "shaders-pack.txt"); } }
 
-        void EnsureShaderCacheIdentity()
+        void RequireGameClosedForShaderPreparation()
         {
             if (Process.GetProcessesByName("GTSport").Length != 0)
                 throw new IOException("Close the game before checking or updating its shader cache.");
-            // Translated SPIR-V contains device-specific extensions and lowering choices.
-            // In particular, AMD compute binaries cannot be reused on NVIDIA.
-            string adapter = ReadStringSetting("Vulkan", "device_uuid", "");
-            if (adapter.Length == 0)
-                adapter = "automatic:" + string.Join(",", VulkanDevices.Enumerate().Select(d => d.Uuid).ToArray());
-            ShaderCacheIdentity.Ensure(ShaderFolder, Exe, Path.Combine(root, "libs", "libSceVideoOut.prx"),
-                                      Log, adapter.ToLowerInvariant());
         }
 
         bool ShadersOutdated()
@@ -3387,7 +3380,7 @@ namespace RyGT
                     if (ReadIntSetting("GPU", "system_ram_gb", 0) == 16 &&
                         !ReadSetting("Vulkan", "pipeline_cache_enabled", true))
                         WriteSetting("Vulkan", "pipeline_cache_enabled", true);
-                    EnsureShaderCacheIdentity();
+                    RequireGameClosedForShaderPreparation();
                     // Folders set up by an earlier RyGTS.exe or adcpatch get the offline livery scripts
                     // (again) now (a few seconds).
                     if (GameScriptsOutdated() && Directory.Exists(gameDir))
