@@ -1,8 +1,6 @@
 # RyGTS
 
 <h1 align="center">
-  <b>RyGTS</b>
-  <br>
   <sub>Gran Turismo Sport on PC</sub>
 </h1>
 
