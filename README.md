@@ -224,6 +224,9 @@ Please do NOT ask shadps4 or Ryty servers for help from this project.
 
 GNU General Public License version 2 only, as Ryty. The renderer (shadGT) is also GPL-2.0.
 
+Gran Turismo is a trademark of Sony Interactive Entertainment. This project is independent of Sony
+and Polyphony Digital.
+
 <p align="center">
   <img src="assets/GranTurismoSportBanner2.webp" width="800" alt="Gran Turismo Sport banner">
 </p>
