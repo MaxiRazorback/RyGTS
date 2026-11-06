@@ -45,11 +45,20 @@ if ($Target -eq 'Launcher') {
         $env:LIB = "$($builtins.DirectoryName);$env:LIB"
     }
     Invoke-Checked 'cmake' $cmakeArgs
+    # CMake also exports the emulator's compilation of these same sources.
+    # Verify only the object compiled for the packaged renderer target.
+    function Test-RendererCompileTarget($Entry) {
+        $output = $Entry.PSObject.Properties['output']
+        if ($output) {
+            return $output.Value -match '(?:^|[/\\])CMakeFiles[/\\]ryty_gpu\.dir[/\\]'
+        }
+        return $Entry.command -match '(?:^|\s)/Fo"?CMakeFiles[/\\]ryty_gpu\.dir[/\\]'
+    }
     if ($Flavor -eq 'Diagnostics') {
         $commands = @(Get-Content -Raw "$source/Build/ci/compile_commands.json" | ConvertFrom-Json)
         foreach ($pattern in @('[/\\]vk_rasterizer\.cpp$', '[/\\]native_xxh512\.c$')) {
-            $compile = @($commands | Where-Object { $_.file -match $pattern })
-            if ($compile.Count -ne 1) { throw "Expected one diagnostics compile command for $pattern" }
+            $compile = @($commands | Where-Object { $_.file -match $pattern -and (Test-RendererCompileTarget $_) })
+            if ($compile.Count -ne 1) { throw "Expected one diagnostics compile command for $pattern (ryty_gpu target; found $($compile.Count))" }
             $command = $compile[0].command
             if ($command -notmatch '(?:^|\s)/O2(?:\s|$)' -or
                 $command -notmatch '(?:^|\s)/Ob2(?:\s|$)' -or
@@ -61,8 +70,8 @@ if ($Target -eq 'Launcher') {
         }
     } else {
         $commands = @(Get-Content -Raw "$source/Build/ci/compile_commands.json" | ConvertFrom-Json)
-        $rasterizer = @($commands | Where-Object { $_.file -match '[/\\]vk_rasterizer\.cpp$' })
-        if ($rasterizer.Count -ne 1) { throw 'Expected one Release rasterizer compile command for NDEBUG verification' }
+        $rasterizer = @($commands | Where-Object { $_.file -match '[/\\]vk_rasterizer\.cpp$' -and (Test-RendererCompileTarget $_) })
+        if ($rasterizer.Count -ne 1) { throw "Expected one Release rasterizer compile command for NDEBUG verification (ryty_gpu target; found $($rasterizer.Count))" }
         $command = $rasterizer[0].command
         if ($command -notmatch '(?:^|\s)(?:/D|-D)NDEBUG(?:\s|$)' -or $command -match '(?:^|\s)/UNDEBUG(?:\s|$)') {
             throw 'Release rasterizer compile command must retain NDEBUG'
