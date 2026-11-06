@@ -209,7 +209,7 @@ Join our server for more updates: https://discord.gg/8dz4U9Nd8d
   (the AdHoc script compiler and disassembler), both MIT licensed. The launcher uses them to build
   the offline livery and decal scripts from your own game files, and Nenkai's research into
   Gran Turismo's formats and scripts made that work possible.
-  @dessierror For the artwork used in README.md
+  - @dessierror For the artwork used in README.md
 - See [AUTHORS.md](AUTHORS.md).
 
 ## Disclaimer
