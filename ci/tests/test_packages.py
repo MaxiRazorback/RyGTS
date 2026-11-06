@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import struct
 import tempfile
 import unittest
@@ -143,6 +144,25 @@ class PackageTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, 'Renderer revisions differ'):
                     pkg.package()
 
+    def test_package_builds_only_selected_flavor(self):
+        for selected, removed_suffix in (('ci', '-diagnostics'), ('debug-ci', '')):
+            with self.subTest(selected=selected), tempfile.TemporaryDirectory() as temp, contextlib.chdir(temp):
+                base = self.fixture()
+                if removed_suffix:
+                    shutil.rmtree(Path('artifacts/launcher' + removed_suffix))
+                    shutil.rmtree(Path('artifacts/renderer' + removed_suffix))
+                else:
+                    shutil.rmtree(Path('artifacts/launcher'))
+                    shutil.rmtree(Path('artifacts/renderer'))
+                env = {'CI_COMMIT_SHA': SHA, 'RYGT_PACKAGE_BASE': str(base), 'CI_CHANNEL': selected}
+                with patch.dict(os.environ, env, clear=True), patch.object(pkg, 'BASE_SHA', pkg.sha(base)):
+                    pkg.package()
+                manifest = json.loads(Path('dist/CI-PACKAGES.json').read_text())
+                self.assertEqual([variant['channel'] for variant in manifest['variants']], [selected])
+                self.assertTrue((Path('dist') / f'RyGTS-{selected}-{SHA[:8]}.zip').exists())
+                other = 'debug-ci' if selected == 'ci' else 'ci'
+                self.assertFalse((Path('dist') / f'RyGTS-{other}-{SHA[:8]}.zip').exists())
+
     def test_missing_or_wrong_symbols_and_source_revision_rejected(self):
         for mutation in ('identity', 'missing', 'commit'):
             with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temp, contextlib.chdir(temp):
@@ -168,6 +188,30 @@ class PackageTests(unittest.TestCase):
         self.assertNotIn("ci/diagnostics/apply.py", build)
         self.assertNotIn("RUNTIME-SOURCE.json", build)
         self.assertNotIn("DIAGNOSTICS-SOURCE.json", build)
+
+    def test_diagnostics_configuration_keeps_optimized_capture_code(self):
+        build = (ROOT / 'ci/build-windows.ps1').read_text(encoding='utf-8')
+        self.assertIn("$configuration = if ($Flavor -eq 'Diagnostics') { 'RelWithDebInfo' } else { 'Release' }", build)
+        self.assertIn('-DCMAKE_C_FLAGS_RELWITHDEBINFO=/O2 /Ob2 /Zi /UNDEBUG', build)
+        self.assertIn('-DCMAKE_CXX_FLAGS_RELWITHDEBINFO=/O2 /Ob2 /Zi /UNDEBUG', build)
+        self.assertIn('compile_commands.json', build)
+        self.assertIn('without NDEBUG', build)
+
+    def test_split_workflow_templates_resolve_and_publish_one_channel_each(self):
+        release = (ROOT / 'ci/github-registry/ci-package-release.yml').read_text(encoding='utf-8')
+        debug = (ROOT / 'ci/github-registry/ci-package-debug.yml').read_text(encoding='utf-8')
+        for workflow, channel in ((release, 'ci'), (debug, 'debug-ci')):
+            self.assertIn(f'CI_CHANNEL: {channel}', workflow)
+            self.assertIn('python3 ci/registry_ci.py resolve', workflow)
+            self.assertIn('python3 ci/package.py', workflow)
+            self.assertIn('python3 ci/registry_ci.py publish', workflow)
+            self.assertIn('workflow_dispatch:', workflow)
+            self.assertIn('schedule:', workflow)
+            self.assertIn('actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02', workflow)
+            self.assertIn('actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093', workflow)
+            self.assertNotIn('actions/upload-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093', workflow)
+        self.assertNotIn('debug-ci', release)
+        self.assertNotIn('ci and debug-ci', debug)
 
     def test_prepared_head_identity_flows_into_both_packages(self):
         with tempfile.TemporaryDirectory() as temp, contextlib.chdir(temp):
