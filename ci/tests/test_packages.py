@@ -15,6 +15,9 @@ ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location('package', ROOT / 'ci/package.py')
 pkg = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(pkg)
+prepare_spec = importlib.util.spec_from_file_location('prepare_renderer', ROOT / 'ci/prepare-renderer.py')
+prepare_renderer = importlib.util.module_from_spec(prepare_spec)
+prepare_spec.loader.exec_module(prepare_renderer)
 SHA = 'a' * 40
 RENDERER_SHA = 'b' * 40
 GUID = uuid.UUID('01234567-89ab-cdef-0123-456789abcdef')
@@ -59,11 +62,6 @@ class PackageTests(unittest.TestCase):
                     full_symbols=bool(suffix))))
                 if target == 'renderer':
                     (folder / 'CI-SOURCE.txt').write_text(pin['repository'] + '\n' + RENDERER_SHA + '\n')
-                    runtime_spec = json.loads((ROOT / 'ci/runtime/overlay.json').read_text())
-                    runtime_patch = ROOT / 'ci/runtime/production-source.patch'
-                    (folder / 'RUNTIME-SOURCE.json').write_text(json.dumps(dict(
-                        schema=1, renderer_commit=RENDERER_SHA,
-                        overlay_sha256=pkg.sha(runtime_patch), source_files=runtime_spec['source_files'])))
                 if suffix:
                     pdb = folder / (Path(binary).stem + '.pdb')
                     pdb.write_bytes(b'Microsoft C/C++ MSF 7.00 fixture')
@@ -72,7 +70,6 @@ class PackageTests(unittest.TestCase):
                         binary_sha256=pkg.sha(folder / binary), pdb_sha256=pkg.sha(pdb))))
                     if target == 'renderer':
                         (folder / 'frame-capture-layouts.json').write_text(json.dumps({pkg.sha(folder / binary).upper(): {}}))
-                        (folder / 'DIAGNOSTICS-SOURCE.json').write_text('{}')
                 self.rehash(folder)
         return base
 
@@ -105,8 +102,9 @@ class PackageTests(unittest.TestCase):
                     self.assertEqual(info['commit'], SHA)
                     self.assertEqual(info['channel'], variant['channel'])
                     self.assertEqual(info['rebuilt'], ['RyGTS.exe', 'libs/libSceVideoOut.prx'])
-                    self.assertEqual(info['runtime_overlay']['renderer_commit'],
-                                     RENDERER_SHA)
+                    self.assertEqual(info['renderer_source'].splitlines(), [
+                        'https://gitlab.com/rygt-team/ShadGT.git', RENDERER_SHA])
+                    self.assertNotIn('runtime_overlay', info)
                     for line in z.read(prefix + 'SHA256SUMS.txt').decode().splitlines():
                         digest, name = line.split('  ', 1)
                         import hashlib
@@ -139,8 +137,6 @@ class PackageTests(unittest.TestCase):
             folder = Path('artifacts/renderer-diagnostics')
             source = folder / 'CI-SOURCE.txt'; lines = source.read_text().splitlines()
             source.write_text(lines[0] + '\n' + 'c' * 40 + '\n')
-            overlay = folder / 'RUNTIME-SOURCE.json'; value = json.loads(overlay.read_text())
-            value['renderer_commit'] = 'c' * 40; overlay.write_text(json.dumps(value))
             self.rehash(folder)
             env = {'CI_COMMIT_SHA': SHA, 'RYGT_PACKAGE_BASE': str(base)}
             with patch.dict(os.environ, env, clear=True), patch.object(pkg, 'BASE_SHA', pkg.sha(base)):
@@ -164,19 +160,47 @@ class PackageTests(unittest.TestCase):
                 with self.assertRaises((RuntimeError, FileNotFoundError)):
                     pkg.verify_bundle(folder, 'libSceVideoOut.prx', SHA, 'Diagnostics')
 
-    def test_runtime_overlay_provenance_must_match_pinned_patch(self):
+    def test_build_uses_resolved_renderer_head_without_source_overlays(self):
+        build = (ROOT / 'ci/build-windows.ps1').read_text(encoding='utf-8')
+        self.assertIn("ci/prepare-renderer.py", build)
+        self.assertIn("CI-SOURCE.txt", build)
+        self.assertNotIn("ci/runtime/apply.py", build)
+        self.assertNotIn("ci/diagnostics/apply.py", build)
+        self.assertNotIn("RUNTIME-SOURCE.json", build)
+        self.assertNotIn("DIAGNOSTICS-SOURCE.json", build)
+
+    def test_prepared_head_identity_flows_into_both_packages(self):
         with tempfile.TemporaryDirectory() as temp, contextlib.chdir(temp):
+            root = Path(temp) / 'checkout'
+            (root / 'renderer').mkdir(parents=True)
+            (root / 'ci').mkdir()
+            (root / 'renderer/source.json').write_text(json.dumps({
+                'repository': 'https://gitlab.com/rygt-team/ShadGT.git',
+                'branch': 'ryty-gpu', 'commit': 'HEAD'}))
+            prepared = Path(temp) / 'prepared'
+
+            def run(*args):
+                if args[1] == 'init':
+                    prepared.mkdir()
+
+            with patch.object(prepare_renderer, '__file__', str(root / 'ci/prepare-renderer.py')), \
+                    patch.object(prepare_renderer, 'run', side_effect=run), \
+                    patch.object(prepare_renderer.subprocess, 'check_output', return_value=RENDERER_SHA + '\n'), \
+                    patch.dict(os.environ, {'RENDERER_SHA': RENDERER_SHA}, clear=True):
+                prepare_renderer.prepare(prepared)
+
+            identity = (prepared / 'CI-SOURCE.txt').read_text()
             base = self.fixture()
-            folder = Path('artifacts/renderer')
-            overlay_path = folder / 'RUNTIME-SOURCE.json'
-            overlay = json.loads(overlay_path.read_text())
-            overlay['overlay_sha256'] = '0' * 64
-            overlay_path.write_text(json.dumps(overlay))
-            self.rehash(folder)
-            with patch.dict(os.environ, {'CI_COMMIT_SHA': SHA, 'RYGT_PACKAGE_BASE': str(base), 'RENDERER_SHA': RENDERER_SHA}), \
-                    patch.object(pkg, 'BASE_SHA', pkg.sha(base)), \
-                    self.assertRaisesRegex(RuntimeError, 'Production renderer overlay provenance mismatch'):
+            for suffix in ('', '-diagnostics'):
+                folder = Path('artifacts/renderer' + suffix)
+                (folder / 'CI-SOURCE.txt').write_text(identity)
+                self.rehash(folder)
+            with patch.dict(os.environ, {'CI_COMMIT_SHA': SHA, 'RYGT_PACKAGE_BASE': str(base),
+                                         'RENDERER_SHA': RENDERER_SHA}), \
+                    patch.object(pkg, 'BASE_SHA', pkg.sha(base)):
                 pkg.package()
+            manifest = json.loads(Path('dist/CI-PACKAGES.json').read_text())
+            self.assertEqual(manifest['renderer_commit'], RENDERER_SHA)
 
     def test_forbidden_runtime_content(self):
         bad = ('module.sprx', 'symbols.pdb', 'GTSport.exe', 'shaders/x.bin', 'saves/x.dat',
