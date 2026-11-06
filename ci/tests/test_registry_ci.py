@@ -63,7 +63,7 @@ class RendererRevisionTests(unittest.TestCase):
 
 
 class ResolveTests(unittest.TestCase):
-    def run_resolve(self, markers):
+    def run_resolve(self, markers, channel=None):
         requests = []
         def open_url(url, timeout):
             requests.append(url)
@@ -76,7 +76,10 @@ class ResolveTests(unittest.TestCase):
             return response(marker)
         with tempfile.TemporaryDirectory() as folder:
             output = Path(folder) / 'output'
-            with patch.dict(os.environ, {'GITHUB_OUTPUT': str(output), 'FORCE_BUILD': 'false'}), patch.object(registry.urllib.request, 'urlopen', side_effect=open_url), patch.object(registry, 'renderer_revision', return_value=RENDERER) as renderer:
+            env = {'GITHUB_OUTPUT': str(output), 'FORCE_BUILD': 'false'}
+            if channel is not None:
+                env['CI_CHANNEL'] = channel
+            with patch.dict(os.environ, env), patch.object(registry.urllib.request, 'urlopen', side_effect=open_url), patch.object(registry, 'renderer_revision', return_value=RENDERER) as renderer:
                 registry.resolve()
             renderer.assert_called_once_with(SOURCE)
             return dict(line.split('=', 1) for line in output.read_text().splitlines()), requests
@@ -98,6 +101,25 @@ class ResolveTests(unittest.TestCase):
             markers['ci'][field] = value
             with self.subTest(field=field), self.assertRaises(RuntimeError):
                 self.run_resolve(markers)
+
+    def test_selected_channel_resolves_independently(self):
+        markers = {'ci': None, 'debug-ci': {'commit': SOURCE, 'renderer_commit': RENDERER, 'channel': 'debug-ci'}}
+        output, requests = self.run_resolve(markers, 'ci')
+        self.assertEqual(output['needed'], 'true')
+        self.assertEqual(sum('/packages/generic/' in url for url in requests), 1)
+        self.assertIn('/packages/generic/ci/', requests[-1])
+
+        markers = {'ci': None, 'debug-ci': {'commit': SOURCE, 'renderer_commit': RENDERER, 'channel': 'debug-ci'}}
+        output, requests = self.run_resolve(markers, 'debug-ci')
+        self.assertEqual(output['needed'], 'false')
+        self.assertEqual(sum('/packages/generic/' in url for url in requests), 1)
+        self.assertIn('/packages/generic/debug-ci/', requests[-1])
+
+    def test_unknown_channel_rejected_before_network(self):
+        with patch.dict(os.environ, {'GITHUB_OUTPUT': 'unused', 'CI_CHANNEL': 'wrong'}), patch.object(registry.urllib.request, 'urlopen') as request:
+            with self.assertRaises(ValueError):
+                registry.resolve()
+            request.assert_not_called()
 
 
 class PublishTests(unittest.TestCase):
@@ -162,6 +184,49 @@ class PublishTests(unittest.TestCase):
                 with patch.dict(os.environ, {'SOURCE_SHA': SOURCE, 'RENDERER_SHA': RENDERER}), patch.object(registry.urllib.request, 'urlopen') as request:
                     with self.assertRaises((ValueError, RuntimeError)):
                         registry.publish()
+                    request.assert_not_called()
+            finally:
+                os.chdir(original)
+
+    def test_selected_channel_publishes_only_its_package_and_marker(self):
+        import hashlib
+        import zipfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); folder = root / 'source' / 'dist'
+            folder.mkdir(parents=True)
+            channel = 'debug-ci'
+            archive = folder / f'RyGTS-{channel}-{SOURCE[:8]}.zip'
+            info = {'renderer_source': f'{REPOSITORY}\n{RENDERER}\n'}
+            with zipfile.ZipFile(archive, 'w') as package:
+                package.writestr(f'{archive.stem}/BUILD_INFO.txt', json.dumps(info))
+            digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+            archive.with_suffix('.zip.sha256').write_text(f'{digest}  {archive.name}\n')
+            (folder / 'CI-PACKAGES.json').write_text(json.dumps({
+                'schema': 2, 'commit': SOURCE, 'renderer_commit': RENDERER,
+                'variants': [{'channel': channel, 'archive': archive.name, 'sha256': digest}],
+            }))
+            uploads = {}; order = []
+            class Response(io.BytesIO):
+                status = 201
+            def open_url(request, timeout):
+                if isinstance(request, str): return Response(uploads[request])
+                uploads[request.full_url] = request.data.read(); order.append(request.full_url)
+                return Response()
+            original = Path.cwd()
+            try:
+                os.chdir(root)
+                env = {'SOURCE_SHA': SOURCE, 'RENDERER_SHA': RENDERER, 'CI_CHANNEL': channel,
+                       'GITHUB_REPOSITORY': 'RyGT-Team/RyGT-ci', 'GITHUB_RUN_ID': '123',
+                       'GITLAB_PACKAGE_TOKEN': 'test-token', 'GITHUB_STEP_SUMMARY': str(root / 'summary')}
+                with patch.dict(os.environ, env), patch.object(registry.urllib.request, 'urlopen', side_effect=open_url):
+                    registry.publish()
+                self.assertEqual(len(order), 3)
+                self.assertTrue(all('/debug-ci/' in url for url in order))
+                self.assertTrue(order[-1].endswith('/CI-BUILD.json'))
+                with patch.dict(os.environ, {'SOURCE_SHA': SOURCE, 'RENDERER_SHA': RENDERER}), patch.object(registry.urllib.request, 'urlopen') as request:
+                    with self.assertRaisesRegex(RuntimeError, 'channels do not match'):
+                        registry.publish('ci')
                     request.assert_not_called()
             finally:
                 os.chdir(original)

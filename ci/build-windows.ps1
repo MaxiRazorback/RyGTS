@@ -28,6 +28,12 @@ if ($Target -eq 'Launcher') {
     if ($env:RENDERER_SHA -and $env:RENDERER_SHA -cne $rendererIdentity[1]) { throw 'Prepared renderer revision mismatch' }
     $env:RENDERER_SHA = $rendererIdentity[1]
     $configuration = if ($Flavor -eq 'Diagnostics') { 'RelWithDebInfo' } else { 'Release' }
+    $cmakeArgs = @('-S',$source,'-B',"$source/Build/ci",'-G','Ninja',"-DCMAKE_BUILD_TYPE=$configuration",'-DCMAKE_C_COMPILER=clang-cl','-DCMAKE_CXX_COMPILER=clang-cl','-DCMAKE_LINKER=lld-link','-DHAVE_ENDIAN_H=OFF','-DSHADGT_RYTY_GPU=ON','-DENABLE_DISCORD_RPC=ON','-DCMAKE_EXPORT_COMPILE_COMMANDS=ON')
+    if ($Flavor -eq 'Diagnostics') {
+        # RelWithDebInfo normally defines NDEBUG. Diagnostics need the optimized,
+        # symbolized capture instrumentation guarded by #ifndef NDEBUG.
+        $cmakeArgs += @('-DCMAKE_C_FLAGS_RELWITHDEBINFO=/O2 /Ob2 /Zi /UNDEBUG','-DCMAKE_CXX_FLAGS_RELWITHDEBINFO=/O2 /Ob2 /Zi /UNDEBUG')
+    }
     if (!$env:VCINSTALLDIR) {
         $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
         $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
@@ -38,7 +44,45 @@ if ($Target -eq 'Launcher') {
         $env:PATH = "$llvm/bin;$env:PATH"
         $env:LIB = "$($builtins.DirectoryName);$env:LIB"
     }
-    Invoke-Checked 'cmake' @('-S',$source,'-B',"$source/Build/ci",'-G','Ninja',"-DCMAKE_BUILD_TYPE=$configuration",'-DCMAKE_C_COMPILER=clang-cl','-DCMAKE_CXX_COMPILER=clang-cl','-DCMAKE_LINKER=lld-link','-DHAVE_ENDIAN_H=OFF','-DSHADGT_RYTY_GPU=ON','-DENABLE_DISCORD_RPC=ON')
+    Invoke-Checked 'cmake' $cmakeArgs
+    if ($Flavor -eq 'Diagnostics') {
+        $commands = @(Get-Content -Raw "$source/Build/ci/compile_commands.json" | ConvertFrom-Json)
+        foreach ($pattern in @('[/\\]vk_rasterizer\.cpp$', '[/\\]native_xxh512\.c$')) {
+            $compile = @($commands | Where-Object { $_.file -match $pattern })
+            if ($compile.Count -ne 1) { throw "Expected one diagnostics compile command for $pattern" }
+            $command = $compile[0].command
+            if ($command -notmatch '(?:^|\s)/O2(?:\s|$)' -or
+                $command -notmatch '(?:^|\s)/Ob2(?:\s|$)' -or
+                $command -notmatch '(?:^|\s)/Zi(?:\s|$)' -or
+                $command -notmatch '(?:^|\s)/UNDEBUG(?:\s|$)' -or
+                $command -match '(?:^|\s)(?:/D|-D)NDEBUG(?:\s|$)') {
+                throw "Diagnostics compile command for $pattern must be optimized, symbolized, and compiled without NDEBUG"
+            }
+        }
+    } else {
+        $commands = @(Get-Content -Raw "$source/Build/ci/compile_commands.json" | ConvertFrom-Json)
+        $rasterizer = @($commands | Where-Object { $_.file -match '[/\\]vk_rasterizer\.cpp$' })
+        if ($rasterizer.Count -ne 1) { throw 'Expected one Release rasterizer compile command for NDEBUG verification' }
+        $command = $rasterizer[0].command
+        if ($command -notmatch '(?:^|\s)(?:/D|-D)NDEBUG(?:\s|$)' -or $command -match '(?:^|\s)/UNDEBUG(?:\s|$)') {
+            throw 'Release rasterizer compile command must retain NDEBUG'
+        }
+    }
+    $probeSource = @'
+#if defined(RYGT_EXPECT_NDEBUG) != defined(NDEBUG)
+#error NDEBUG state does not match the build flavor
+#endif
+int rygt_ndebug_probe(void) { return 0; }
+'@
+    $probeCpp = "$source/Build/ci/ndebug-probe.cpp"
+    $probeC = "$source/Build/ci/ndebug-probe.c"
+    Set-Content -LiteralPath $probeCpp -Value $probeSource -Encoding utf8
+    Set-Content -LiteralPath $probeC -Value $probeSource -Encoding utf8
+    $probeFlags = if ($Flavor -eq 'Diagnostics') { @('/UNDEBUG') } else { @('/DNDEBUG','/DRYGT_EXPECT_NDEBUG=1') }
+    foreach ($probe in @($probeC, $probeCpp)) {
+        $object = "$source/Build/ci/ndebug-probe-$([IO.Path]::GetExtension($probe).TrimStart('.')).obj"
+        Invoke-Checked 'clang-cl' (@('/nologo','/c','/O2','/Ob2','/Zi') + $probeFlags + @($probe,"/Fo$object"))
+    }
     if (!(Select-String -LiteralPath "$source/Build/ci/CMakeCache.txt" -Pattern '^ENABLE_DISCORD_RPC:BOOL=ON$' -Quiet)) { throw 'Discord RPC was not enabled in renderer configuration' }
     Invoke-Checked 'cmake' @('--build',"$source/Build/ci",'--target','ryty_gpu','--parallel','2')
     $binary = Get-ChildItem "$source/Build/ci" -Recurse -Filter libSceVideoOut.prx

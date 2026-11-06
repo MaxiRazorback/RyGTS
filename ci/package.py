@@ -185,16 +185,26 @@ def assemble(base, commit, flavor, channel, suffix):
     return dict(channel=channel, flavor=flavor, archive=result.name, sha256=digest, files=len(manifest)+1, renderer_commit=expected)
 
 
-def package():
+def package(channels=None):
     commit = os.environ['CI_COMMIT_SHA']
     if not re.fullmatch('[0-9a-f]{40}', commit): raise RuntimeError('Invalid source revision')
+    if channels is None:
+        selected = os.environ.get('CI_CHANNEL')
+        channels = (selected,) if selected else tuple(channel for _, channel, _ in VARIANTS)
+    else:
+        channels = (channels,) if isinstance(channels, str) else tuple(channels)
+    valid_channels = tuple(channel for _, channel, _ in VARIANTS)
+    if not channels or len(set(channels)) != len(channels) or any(channel not in valid_channels for channel in channels):
+        raise ValueError('Invalid CI package channel selection')
+    requested = set(channels)
+    channels = tuple(channel for channel in valid_channels if channel in requested)
     base = Path(os.environ.get('RYGT_PACKAGE_BASE', '.ci-runtime-base.zip'))
     if not base.exists():
         headers = {'JOB-TOKEN': os.environ['CI_JOB_TOKEN']} if os.environ.get('CI_JOB_TOKEN') else {}
         with urllib.request.urlopen(urllib.request.Request(BASE_URL, headers=headers)) as response, base.open('wb') as output:
             shutil.copyfileobj(response, output)
     if sha(base) != BASE_SHA: raise RuntimeError('Pinned runtime archive checksum mismatch')
-    variants = [assemble(base, commit, *variant) for variant in VARIANTS]
+    variants = [assemble(base, commit, *variant) for variant in VARIANTS if variant[1] in channels]
     if len({variant['renderer_commit'] for variant in variants}) != 1:
         raise RuntimeError('Renderer revisions differ between package variants')
     (Path('dist') / 'CI-PACKAGES.json').write_text(json.dumps(dict(schema=2, commit=commit, renderer_commit=variants[0]['renderer_commit'], variants=variants), indent=2) + '\n')
