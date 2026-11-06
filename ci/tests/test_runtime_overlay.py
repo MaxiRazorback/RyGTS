@@ -1,5 +1,6 @@
 import hashlib
 import importlib.util
+import json
 import sys
 import tempfile
 import unittest
@@ -13,6 +14,22 @@ validate_files = overlay.validate_files
 
 
 class RuntimeOverlayTests(unittest.TestCase):
+    def test_manifest_guards_exactly_the_patched_files(self):
+        root = Path(__file__).resolve().parents[2]
+        patch = (root / 'ci/runtime/production-source.patch').read_text(encoding='utf-8')
+        manifest = json.loads((root / 'ci/runtime/overlay.json').read_text(encoding='utf-8'))
+        patch_files = {line[6:] for line in patch.splitlines() if line.startswith('--- a/')}
+        self.assertEqual(patch_files, set(manifest['source_files']))
+
+    def test_amd_pipeline_policy_keeps_force_whole_perf_control(self):
+        root = Path(__file__).resolve().parents[2]
+        patch = (root / 'ci/runtime/production-source.patch').read_text(encoding='utf-8')
+        self.assertIn(
+            '+              tessellated && (Common::PerfFeatureEnabled(80) || '
+            '!Mr14SharedTessellationEnabled(false)))',
+            patch,
+        )
+
     def test_checks_baseline_and_postimage_hashes_with_windows_newlines(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
