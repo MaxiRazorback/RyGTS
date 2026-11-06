@@ -25,7 +25,7 @@ everything GT Sport needs added on top.
 | Race summary and results | Working |
 | Audio | Working |
 | Controllers | Working through SDL |
-| Steering Wheels | In Development |
+| Steering Wheels | Working |
 | Online features | In Development |
 | VR features | In Development |
 
