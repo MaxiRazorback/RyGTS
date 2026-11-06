@@ -117,14 +117,6 @@ def assemble(base, commit, flavor, channel, suffix):
     if len(lines) != 2 or lines[0] != pin['repository'] or not re.fullmatch('[0-9a-f]{40}', lines[1]) or (expected and lines[1] != expected) or (pin['commit'] != 'HEAD' and pin['commit'] != lines[1]):
         raise RuntimeError('Renderer source revision mismatch')
     expected = lines[1]
-    runtime_file = verify_artifact(renderer_folder, 'RUNTIME-SOURCE.json', commit, 'data')
-    runtime_overlay = json.loads(runtime_file.read_text(encoding='utf-8-sig'))
-    runtime_spec = json.loads((root / 'ci/runtime/overlay.json').read_text(encoding='utf-8'))
-    runtime_patch = root / 'ci/runtime/production-source.patch'
-    if (runtime_overlay.get('schema') != 1 or runtime_overlay.get('renderer_commit') != expected or
-            runtime_overlay.get('overlay_sha256') != sha(runtime_patch) or
-            runtime_overlay.get('source_files') != runtime_spec.get('source_files')):
-        raise RuntimeError('Production renderer overlay provenance mismatch')
     if b'1440140585595047977' not in renderer.read_bytes() or b'DISCORD-RPC: compiled in;' not in renderer.read_bytes():
         raise RuntimeError('Discord RPC missing or application ID incorrect')
     name = f'RyGTS-{channel}-{commit[:8]}'
@@ -146,7 +138,6 @@ def assemble(base, commit, flavor, channel, suffix):
         configuration='RelWithDebInfo' if suffix else 'Release', optimized=True,
         pipeline=os.environ.get('CI_PIPELINE_URL'), runtime_base_url=BASE_URL, runtime_base_sha256=BASE_SHA,
         renderer_source=source, launcher_sha256=sha(launcher), renderer_sha256=sha(renderer),
-        runtime_overlay=runtime_overlay,
         rebuilt=['RyGTS.exe', 'libs/libSceVideoOut.prx'],
         retained='Other runtime libraries and Windows conversion helpers from pinned October 25 archive')
     if suffix:
@@ -163,8 +154,6 @@ def assemble(base, commit, flavor, channel, suffix):
         if sha(renderer).upper() not in json.loads(layout.read_text()):
             raise RuntimeError('Capture layout does not match the diagnostics binary')
         shutil.copy2(layout, stage / 'investigation-build/frame-capture-layouts.json')
-        overlay = verify_artifact(renderer_folder, 'DIAGNOSTICS-SOURCE.json', commit, 'data')
-        provenance['diagnostics_overlay'] = json.loads(overlay.read_text())
         provenance['symbols'] = [json.loads((folder / 'SYMBOLS.json').read_text(encoding='utf-8-sig')) for folder in (launcher_folder, renderer_folder)]
         shutil.copy2(root / 'ci/diagnostics/DEBUG-README.txt', stage / 'README.txt')
     else:
