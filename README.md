@@ -1,8 +1,6 @@
 # RyGTS
 
 <h1 align="center">
-  <img src="assets/GranTurismoSportBanner.png" width="800" alt="Gran Turismo Sport banner">
-  <br>
   <b>RyGTS</b>
   <br>
   <sub>Gran Turismo Sport on PC</sub>
