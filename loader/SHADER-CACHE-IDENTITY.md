@@ -1,11 +1,11 @@
-# Shader cache identity
+# Shader cache persistence
 
-Launcher source: loader/ShaderCacheIdentity.cs, called after portable-cache migration and before shader-pack preparation during Setup and Play. SHA-256 fingerprints cover the generated GTSport.exe and libs/libSceVideoOut.prx. The stamp is shaders/cache-identity.sha256. Hashes are compatibility fingerprints, not signatures or trusted provenance.
+The launcher preserves shader caches across game executable, renderer binary and GPU identity changes. This applies to both Release and Diagnostics builds. Setup and Play no longer hash those identities to purge managed CUSA directories, shader archives, else-scope markers or the shader-pack stamp.
 
-Missing or changed identity removes managed CUSA cache directories (plain/direct-sets), archive caches, else-scope markers and the shader-pack stamp. Existing .outdated directories are removed even when identity matches. Unrelated files are retained. No old shader directory is renamed or preserved. Cache is rebuilt/prepared on demand; this does not compile every unseen game shader before launch.
+Existing `shaders/cache-identity.sha256` files are ignored and left in place. The launcher no longer removes `.outdated` directories through this identity check. No user cache files need to be deleted or migrated for this change.
 
-Cleanup requires the game closed, refuses reparse points, validates every selected tree before deletion, and publishes its identity only after successful cleanup. Missing binaries or cleanup failures abort the launch. Every renderer binary change currently invalidates the cache conservatively, even if its shader compiler is unchanged. Directly launching GTSport.exe bypasses launcher identity validation.
+Portable-cache migration, shader-pack preparation and the game-closed guard remain. A changed shader pack can still prepare new program entries from the user's game files. Executable integrity checks and rebuild records remain separate and are not removed.
 
-Renderer cache_storage.cpp also deletes version-incompatible stores instead of renaming them to .outdated. Failure stops cache opening. Existing renderer store-version policies remain in effect.
+This removes the launcher's binary/GPU identity purge, not the renderer's cache-format/version policies or the driver's own pipeline-cache compatibility handling.
 
-Tests passed in temporary fixture folders: missing stamp invalidation, matching stamp reuse, executable change, renderer change, old-backup removal, unrelated-file retention and missing-binary failure before deletion. Launcher compiled with existing CS1690 UI warning. No live game cache was deleted or migrated during development/testing. Candidate launcher is in this directory; installation/runtime validation remains separate.
+The removed `ShaderCacheIdentity` helper and its obsolete deletion tests are no longer part of the launcher source/build. Live shader caches are not touched by the source change or launcher compilation.

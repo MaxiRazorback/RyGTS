@@ -15,6 +15,11 @@ using System.Text;
 using System.Threading;
 using System.Windows.Forms;
 
+[assembly: System.Reflection.AssemblyCompany("RyGTS")]
+[assembly: System.Reflection.AssemblyProduct("RyGTS")]
+[assembly: System.Reflection.AssemblyTitle("RyGTS Launcher")]
+[assembly: System.Reflection.AssemblyDescription("Gran Turismo Sport launcher for Windows")]
+
 namespace RyGT
 {
     static class Native
@@ -141,7 +146,7 @@ namespace RyGT
             string script = Path.Combine(Path.GetTempPath(), name + ".sh");
             string done = Path.Combine(Path.GetTempPath(), name + ".done");
             var text = new StringBuilder();
-            text.Append("#!/bin/sh\n# Written by RyGT.exe: links the game's files under Wine.\n");
+            text.Append("#!/bin/sh\n# Written by RyGTS.exe: links the game's files under Wine.\n");
             text.Append("PATH=/usr/local/bin:/usr/bin:/bin\n");
             text.Append("link() { if [ -L \"$2\" ] || [ ! -e \"$2\" ]; then ln -sfn \"$1\" \"$2\"; fi; }\n");
             foreach (var pair in links)
@@ -396,6 +401,8 @@ namespace RyGT
     /// A check box drawn in the loader's colors: a dark rounded square, red with a white tick when checked.
     class DarkCheckBox : CheckBox
     {
+        public bool BoxRight; // the box at the row's right edge, the text at its left
+
         public DarkCheckBox()
         {
             SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer |
@@ -421,7 +428,7 @@ namespace RyGT
             OnPaintBackground(e);
             g.SmoothingMode = SmoothingMode.AntiAlias;
             int size = 16;
-            var box = new RectangleF(1.5f, (Height - size) / 2 + 0.5f, size - 1, size - 1);
+            var box = new RectangleF(BoxRight ? Width - size - 1.5f : 1.5f, (Height - size) / 2 + 0.5f, size - 1, size - 1);
             bool hover = ClientRectangle.Contains(PointToClient(Cursor.Position));
             Dark.FillRounded(g, !Enabled ? Color.FromArgb(36, 36, 36) : Checked ? (hover ? Dark.AccentHover : Dark.Accent) : Dark.Field, box, 4);
             if (!Checked)
@@ -442,7 +449,7 @@ namespace RyGT
                     });
                 }
             }
-            TextRenderer.DrawText(g, Text, Font, new Point(size + 8, (Height - TextRenderer.MeasureText(Text, Font).Height) / 2),
+            TextRenderer.DrawText(g, Text, Font, new Point(BoxRight ? 0 : size + 8, (Height - TextRenderer.MeasureText(Text, Font).Height) / 2),
                                   Enabled ? ForeColor : Color.FromArgb(112, 112, 112), TextFormatFlags.NoPrefix);
         }
 
@@ -527,7 +534,7 @@ namespace RyGT
         }
     }
 
-    /// The big rounded banner: the launcher picture (launcher\background.png next to RyGT.exe),
+    /// The big rounded banner: the launcher picture (launcher\background.png next to RyGTS.exe),
     /// darkened on the left and at the bottom, where the title and the Play button sit.
     class Hero : Panel
     {
@@ -706,6 +713,11 @@ namespace RyGT
         }
     }
 
+    sealed class SetupDumpException : Exception
+    {
+        public SetupDumpException(string message) : base(message) { }
+    }
+
     /// Unwraps an unencrypted (fake-signed) PS4 SELF into a plain ELF.
     static class Self
     {
@@ -718,7 +730,8 @@ namespace RyGT
         {
             if (IsElf(d)) return d;
             if (d.Length < 32 || d[0] != 0x4f || d[1] != 0x15 || d[2] != 0x3d || d[3] != 0x1d)
-                throw new Exception(name + " is neither a SELF nor an ELF file.");
+                throw new SetupDumpException(name + " is neither a SELF nor an ELF file.\n\n" +
+                    "Re-dump your game/update and the PS4 sys_modules folder. Select the new dump folders, then run Set up again.");
             int count = BitConverter.ToUInt16(d, 24);
             var entries = new Dictionary<long, long[]>();
             for (int i = 0; i < count; i++)
@@ -779,7 +792,7 @@ namespace RyGT
         }
     }
 
-    /// Finishes the converted GTSport.exe: the launcher's icon (RyGT.exe's embedded copy of ryGT.ico),
+    /// Finishes the converted GTSport.exe: the launcher's icon (RyGTS.exe's embedded copy of ryGT.ico),
     /// so Explorer and shortcuts show the game's art instead of a blank program icon, and the Windows
     /// (GUI) subsystem, so a double-click opens only the game window, without a console.
     static class GameExe
@@ -816,6 +829,76 @@ namespace RyGT
             // depending on Wine rewriting the resources of a 100 MB program.)
             if (!Wine.Detected && !HasIcon(exe)) ApplyIcon(exe);
             if (ReadSubsystem(exe) != GuiSubsystem) WriteSubsystem(exe, GuiSubsystem);
+        }
+
+        public static void ApplyVersionInfo(string exe)
+        {
+            if (Wine.Detected) return;
+            if (HasResource(exe, RtVersion) &&
+                !String.Equals(FileVersionInfo.GetVersionInfo(exe).CompanyName, "RyGT", StringComparison.Ordinal)) return;
+            byte[] data = VersionInfo(new[] {
+                new[] { "CompanyName", "RyGTS" },
+                new[] { "FileDescription", "Gran Turismo Sport" },
+                new[] { "FileVersion", "1.69" },
+                new[] { "InternalName", "GTSport" },
+                new[] { "OriginalFilename", "GTSport.exe" },
+                new[] { "ProductName", "Gran Turismo Sport" },
+                new[] { "ProductVersion", "1.69" },
+            });
+            IntPtr update = BeginUpdateResource(exe, false);
+            if (update == IntPtr.Zero) throw new Exception("Could not open " + exe + " (error " + Marshal.GetLastWin32Error() + ").");
+            bool ok = UpdateResource(update, (IntPtr)RtVersion, (IntPtr)1, 0x0409, data, (uint)data.Length);
+            if (!EndUpdateResource(update, !ok) || !ok)
+                throw new Exception("Could not write the version information into " + exe + " (error " + Marshal.GetLastWin32Error() + ").");
+        }
+
+        const int RtVersion = 16;
+
+        static bool HasResource(string exe, int type)
+        {
+            IntPtr module = LoadLibraryEx(exe, IntPtr.Zero, 0x2 | 0x20);
+            if (module == IntPtr.Zero) return false;
+            try { return FindResource(module, (IntPtr)1, (IntPtr)type) != IntPtr.Zero; }
+            finally { FreeLibrary(module); }
+        }
+
+        static byte[] VersionInfo(string[][] strings)
+        {
+            var fixedInfo = new MemoryStream();
+            var w = new BinaryWriter(fixedInfo);
+            w.Write(0xFEEF04BDu); w.Write(0x00010000u);
+            w.Write(0x00010045u); w.Write(0u);
+            w.Write(0x00010045u); w.Write(0u);
+            w.Write(0x3Fu); w.Write(0u); w.Write(0x40004u);
+            w.Write(1u); w.Write(0u); w.Write(0u); w.Write(0u);
+            var table = new List<byte[]>();
+            foreach (var s in strings)
+                table.Add(Block(s[0], Encoding.Unicode.GetBytes(s[1] + "\0"), (s[1].Length + 1), 1, null));
+            byte[] stringTable = Block("040904b0", null, 0, 1, table);
+            byte[] stringFileInfo = Block("StringFileInfo", null, 0, 1, new List<byte[]> { stringTable });
+            byte[] translation = Block("Translation", new byte[] { 0x09, 0x04, 0xb0, 0x04 }, 4, 0, null);
+            byte[] varFileInfo = Block("VarFileInfo", null, 0, 1, new List<byte[]> { translation });
+            return Block("VS_VERSION_INFO", fixedInfo.ToArray(), 52, 0,
+                         new List<byte[]> { stringFileInfo, varFileInfo });
+        }
+
+        static byte[] Block(string key, byte[] value, int valueLength, ushort type, List<byte[]> children)
+        {
+            var block = new MemoryStream();
+            var w = new BinaryWriter(block);
+            w.Write((ushort)0); w.Write((ushort)valueLength); w.Write(type);
+            w.Write(Encoding.Unicode.GetBytes(key + "\0"));
+            while (block.Length % 4 != 0) w.Write((byte)0);
+            if (value != null) w.Write(value);
+            if (children != null)
+                foreach (var child in children)
+                {
+                    while (block.Length % 4 != 0) w.Write((byte)0);
+                    w.Write(child);
+                }
+            byte[] bytes = block.ToArray();
+            BitConverter.GetBytes((ushort)bytes.Length).CopyTo(bytes, 0);
+            return bytes;
         }
 
         // The subsystem field of the PE optional header: PE header offset at 0x3c, then the "PE\0\0"
@@ -859,7 +942,7 @@ namespace RyGT
             byte[] ico;
             using (var stream = typeof(GameExe).Assembly.GetManifestResourceStream("ryGT.ico"))
             {
-                if (stream == null) throw new Exception("RyGT.exe has no embedded icon.");
+                if (stream == null) throw new Exception("RyGTS.exe has no embedded icon.");
                 ico = new byte[stream.Length];
                 stream.Read(ico, 0, ico.Length);
             }
@@ -893,6 +976,62 @@ namespace RyGT
                 if (!EndUpdateResource(update, !ok) && ok)
                     throw new Exception("Could not write the icon into " + exe + " (error " + Marshal.GetLastWin32Error() + ").");
             }
+        }
+    }
+
+    static class AmdSoftware
+    {
+        // AMD Software can mark a manually added game hidden again; every start clears that.
+        static void Unhide(string list, string exe)
+        {
+            // AMD Software rewrites the list when it closes; leave it alone while it is open.
+            if (Process.GetProcessesByName("RadeonSoftware").Length != 0) return;
+            string text = File.ReadAllText(list);
+            int at = text.IndexOf(exe.Replace("\\", "\\\\"), StringComparison.OrdinalIgnoreCase);
+            if (at < 0) return;
+            int entry = text.LastIndexOf("\"FSRUpgradeAvailable\"", at, StringComparison.Ordinal);
+            int hidden = entry < 0 ? -1 : text.IndexOf("\"hidden\"", entry, StringComparison.Ordinal);
+            if (hidden < 0) return;
+            int value = text.IndexOf('"', text.IndexOf(':', hidden)) + 1;
+            if (String.CompareOrdinal(text, value, "TRUE", 0, 4) != 0) return;
+            File.Copy(list, list + ".rygt-unhide-backup", true);
+            File.WriteAllText(list, text.Substring(0, value) + "FALSE" + text.Substring(value + 4), new UTF8Encoding(false));
+        }
+
+        public static void EnsureGameEntry(string root, string exe)
+        {
+            try
+            {
+                if (Wine.Detected || Environment.GetEnvironmentVariable("RYGT_AMD_SOFTWARE") == "0") return;
+                string list = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                                           "AMD", "CN", "gmdb.blb");
+                string script = Path.Combine(root, "tools", "amd", "Add-To-AMD-Software.ps1");
+                string marker = Path.Combine(root, "user", "amd-software-entry.txt");
+                if (!File.Exists(list) || !File.Exists(script) || !File.Exists(exe)) return;
+                Unhide(list, exe);
+                if (File.Exists(marker) && File.ReadAllText(marker).Trim() == exe) return;
+                string escaped = exe.Replace("\\", "\\\\");
+                if (File.ReadAllText(list).IndexOf(escaped, StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    File.WriteAllText(marker, exe);
+                    return;
+                }
+                var start = new ProcessStartInfo("powershell.exe",
+                    "-NoProfile -ExecutionPolicy Bypass -File \"" + script + "\" -GameExe \"" + exe + "\"")
+                {
+                    UseShellExecute = false, CreateNoWindow = true,
+                    RedirectStandardOutput = true, RedirectStandardError = true,
+                };
+                using (var process = Process.Start(start))
+                {
+                    string output = process.StandardOutput.ReadToEnd() + process.StandardError.ReadToEnd();
+                    if (!process.WaitForExit(30000)) return;
+                    if (process.ExitCode == 0) File.WriteAllText(marker, exe);
+                    File.AppendAllText(Path.Combine(root, "logs", "setup.log"),
+                                       "AMD Software game list: " + output.Trim() + Environment.NewLine);
+                }
+            }
+            catch { }
         }
     }
 
@@ -973,7 +1112,7 @@ namespace RyGT
         static readonly string[] FirmwareModules = { "libSceFont", "libSceFontFt", "libSceFreeTypeOt", "libSceJson2", "libSceNgs2", "libSceBluetoothHid" };
         // Used when present: the JPEG decoder (Scapes thumbnails and backgrounds) and PNG encoder (photos).
         // Both are plain software modules needing only libkernel and libSceLibcInternal.
-        // Other firmware modules GT Sport imports stay RyGT's stubs in libs: some, such as
+        // Other firmware modules GT Sport imports stay RyGTS's stubs in libs: some, such as
         // libSceOttvCapture, need modules nothing provides and make GTSport.exe fail at startup.
         static readonly string[] OptionalFirmwareModules = { "libSceJpegDec", "libScePngEnc" };
 
@@ -985,11 +1124,12 @@ namespace RyGT
         readonly Panel[] pages = new Panel[3];
         readonly Button[] tabs = new Button[3];
         volatile bool busy;
+        Action<bool> showGraphics;
 
         public LoaderForm()
         {
             settings = new Settings(Path.Combine(root, "RyGT.ini"));
-            Text = "ryGT - Gran Turismo Sport";
+            Text = "RyGTS - Gran Turismo Sport";
             try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
             Font = new Font("Segoe UI", 9f);
             ClientSize = new Size(1280, 800);
@@ -1002,7 +1142,7 @@ namespace RyGT
             var logo = new PictureBox { Size = new Size(30, 30), SizeMode = PictureBoxSizeMode.Zoom, Margin = new Padding(0, 0, 8, 0) };
             try { logo.Image = new Icon(Icon, 32, 32).ToBitmap(); } catch { }
             top.Controls.Add(logo);
-            top.Controls.Add(new Label { Text = "ryGT", AutoSize = true, Font = new Font("Segoe UI Semibold", 14f), Margin = new Padding(0, 1, 28, 0) });
+            top.Controls.Add(new Label { Text = "RyGTS", AutoSize = true, Font = new Font("Segoe UI Semibold", 14f), Margin = new Padding(0, 1, 28, 0) });
             var tabNames = new[] { "Home", "Settings", "Controls" };
             for (int i = 0; i < tabs.Length; ++i)
             {
@@ -1025,7 +1165,7 @@ namespace RyGT
             footer.Controls.Add(status, 0, 0);
             footer.Controls.Add(new Label
             {
-                Text = "ryGT for Windows " + (char)183 + " GT Sport 1.69", AutoSize = true, Anchor = AnchorStyles.Right, ForeColor = Dark.AccentText,
+                Text = "RyGTS for Windows " + (char)183 + " GT Sport 1.69", AutoSize = true, Anchor = AnchorStyles.Right, ForeColor = Dark.AccentText,
                 Tag = "heading", Font = new Font("Segoe UI Semibold", 8.5f), Margin = new Padding(0)
             }, 1, 0);
 
@@ -1064,7 +1204,7 @@ namespace RyGT
             home.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             pages[0].Controls.Add(home);
 
-            // The background picture (launcher\background.png next to RyGT.exe) fills the banner.
+            // The background picture (launcher\background.png next to RyGTS.exe) fills the banner.
             var hero = new Hero(background) { Dock = DockStyle.Fill, Margin = new Padding(0, 0, 0, 14) };
             home.Controls.Add(hero, 0, 0);
             var heroText = new FlowLayoutPanel
@@ -1143,10 +1283,32 @@ namespace RyGT
             var right = new TableLayoutPanel { ColumnCount = 1, AutoSize = true, Dock = DockStyle.Fill, Margin = new Padding(7, 0, 0, 0) };
             left.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             right.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            settingsPage.Controls.Add(left, 0, 1);
-            settingsPage.Controls.Add(right, 1, 1);
+            // Tabs: general settings, or graphics with a details panel beside it.
+            var settingsTabs = new FlowLayoutPanel { AutoSize = true, BackColor = Color.Transparent, WrapContents = false, Margin = new Padding(0, 0, 0, 10) };
+            var generalTab = new Button { Text = "General", AutoSize = true, Tag = "nav" };
+            var graphicsTab = new Button { Text = "Graphics", AutoSize = true, Tag = "nav-on", Margin = new Padding(8, 0, 0, 0) };
+            settingsTabs.Controls.Add(generalTab);
+            settingsTabs.Controls.Add(graphicsTab);
+            settingsPage.Controls.Add(settingsTabs, 0, 1);
+            settingsPage.SetColumnSpan(settingsTabs, 2);
+            settingsPage.Controls.Add(left, 0, 2);
+            settingsPage.SetColumnSpan(left, 2);
+            settingsPage.Controls.Add(right, 0, 3);
+            settingsPage.SetColumnSpan(right, 2);
+            showGraphics = delegate (bool on)
+            {
+                left.Visible = !on;
+                right.Visible = on;
+                graphicsTab.Tag = on ? "nav-on" : "nav";
+                generalTab.Tag = on ? "nav" : "nav-on";
+                generalTab.Invalidate();
+                graphicsTab.Invalidate();
+            };
+            generalTab.Click += delegate { WithoutRedraw(delegate { showGraphics(false); }); };
+            graphicsTab.Click += delegate { WithoutRedraw(delegate { showGraphics(true); }); };
+            showGraphics(false);
 
-            var display = Section(left, "Display");
+            var display = Section(right, "Display");
             AddVulkanDeviceSetting(display);
             AddScreenSettings(display);
             AddShapeSetting(display);
@@ -1172,11 +1334,11 @@ namespace RyGT
             // amd_fidelityfx_vk.dll (next to GTSport.exe, part of the release), or shadGT's FSR 1 pass.
             // AMD: FSR upscaling (FSR 3.1 through amd_fidelityfx_vk.dll, or shadGT's FSR 1) and
             // FSR 3.1 frame generation (any GPU; independent of the upscaling choice).
-            var fsr = AddOption(graphics, "Upscale with AMD FSR (above 1080p)", "GPU", "fsr_enabled", false);
+            var fsr = AddOption(graphics, "Upscale with AMD FSR or Intel XeSS", "GPU", "fsr_enabled", false);
             bool fsr3Installed = File.Exists(Path.Combine(root, "amd_fidelityfx_vk.dll"));
             var fsr3 = AddOption(graphics, fsr3Installed
-                ? "Use FSR 3.1.4 (off: FSR 1)"
-                : "Use FSR 3.1.4 (needs amd_fidelityfx_vk.dll)", "GPU", "fsr3_enabled", true);
+                ? "Use the newest FSR (off: FSR 1)"
+                : "Use the newest FSR (needs amd_fidelityfx_vk.dll)", "GPU", "fsr3_enabled", true);
             var rcas = AddOption(graphics, "FSR sharpening (RCAS)", "GPU", "rcas_enabled", true);
             var framegen = AddOption(graphics, fsr3Installed
                 ? "FSR frame generation: about 2x the frames (any GPU)"
@@ -1184,10 +1346,10 @@ namespace RyGT
             // FSR-200: FSR reconstructs the race scene from the game's depth, motion vectors and
             // camera jitter (the default renderer's temporal scene capture, like temporal DLSS)
             // instead of scaling the finished picture.
-            var fsrTemporal = AddOption(graphics, "Temporal upscaling: replaces the game's anti-aliasing (default renderer only)",
+            var fsrTemporal = AddOption(graphics, "Temporal upscaling: replaces the game's anti-aliasing",
                 "GPU", "fsr_temporal", true);
             // FSR-201: the upscaler: the FSR version inside amd_fidelityfx_vk.dll (FSR 4 is DirectX 12
-            // only until AMD releases it for Vulkan; until then the renderer uses FSR 3.1), or
+            // SDK 2.4.0 Vulkan DLLs; without them the renderer uses FSR 3.1), or
             // XESS-200: Intel XeSS through libxess.dll next to GTSport.exe (temporal only; from Intel's
             // XeSS SDK), on any GPU with the Vulkan features it needs.
             bool xessInstalled = File.Exists(Path.Combine(root, "libxess.dll"));
@@ -1195,8 +1357,8 @@ namespace RyGT
             var versionLabel = new Label { Text = "Upscaler", AutoSize = false, Width = 174, Height = 20, BackColor = Color.Transparent, Margin = new Padding(0, 6, 8, 0) };
             var version = new DarkComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200, FlatStyle = FlatStyle.Flat };
             var versionValues = new[] { "fsr3", "fsr4", "xess" };
-            version.Items.AddRange(new object[] { "AMD FSR 3.1", "AMD FSR 4 (D3D12, WIP)",
-                xessInstalled ? "Intel XeSS (temporal)" : "Intel XeSS (needs libxess.dll)" });
+            version.Items.AddRange(new object[] { "AMD FSR 3", "AMD FSR 4",
+                xessInstalled ? "Intel XeSS" : "Intel XeSS (needs libxess.dll)" });
             version.SelectedIndex = Math.Max(0, Array.IndexOf(versionValues, ReadStringSetting("GPU", "fsr_upscaler", "fsr3")));
             version.SelectedIndexChanged += delegate
             {
@@ -1206,6 +1368,48 @@ namespace RyGT
             versionRow.Controls.Add(versionLabel);
             versionRow.Controls.Add(version);
             graphics.Controls.Add(versionRow);
+            // XESS-201: fetches Intel's official SDK on request; only the upscaler and its licence
+            // are kept. Intel's licence allows redistributing it unmodified.
+            var xessDownload = new Button { Text = xessInstalled ? "Reinstall XeSS" : "Download XeSS (77 MB)", AutoSize = true, Margin = new Padding(22, 2, 0, 4) };
+            xessDownload.Click += delegate
+            {
+                if (MessageBox.Show(this, "Download Intel XeSS SDK 3.0.2 from github.com/intel/xess and install libxess.dll next to GTSport.exe? It uses Intel's Simplified Software License.",
+                                    "Intel XeSS", MessageBoxButtons.OKCancel) != DialogResult.OK) return;
+                xessDownload.Enabled = false;
+                xessDownload.Text = "Downloading...";
+                new System.Threading.Thread(delegate ()
+                {
+                    string error = null;
+                    string zip = Path.Combine(Path.GetTempPath(), "RyGT-XeSS-3.0.2.zip");
+                    try
+                    {
+                        System.Net.ServicePointManager.SecurityProtocol = System.Net.SecurityProtocolType.Tls12;
+                        using (var web = new System.Net.WebClient())
+                            web.DownloadFile("https://github.com/intel/xess/releases/download/v3.0.2/XeSS_SDK_3.0.2.zip", zip);
+                        using (var archive = System.IO.Compression.ZipFile.OpenRead(zip))
+                        {
+                            System.IO.Compression.ZipFileExtensions.ExtractToFile(archive.GetEntry("bin/libxess.dll"), Path.Combine(root, "libxess.dll"), true);
+                            System.IO.Compression.ZipFileExtensions.ExtractToFile(archive.GetEntry("LICENSE.txt"), Path.Combine(root, "libxess-LICENSE.txt"), true);
+                            System.IO.Compression.ZipFileExtensions.ExtractToFile(archive.GetEntry("third-party-programs.txt"), Path.Combine(root, "libxess-third-party-programs.txt"), true);
+                        }
+                    }
+                    catch (Exception e) { error = e.Message; }
+                    try { File.Delete(zip); } catch { }
+                    BeginInvoke((Action)delegate
+                    {
+                        xessDownload.Enabled = true;
+                        if (error != null)
+                        {
+                            xessDownload.Text = "Download XeSS (77 MB)";
+                            MessageBox.Show(this, "Could not install XeSS: " + error);
+                            return;
+                        }
+                        xessDownload.Text = "Reinstall XeSS";
+                        version.Items[2] = "Intel XeSS";
+                    });
+                }) { IsBackground = true }.Start();
+            };
+            graphics.Controls.Add(xessDownload);
             // FSR-209: the upscaler's preset (GPU.upscale_ratio). GT Sport always renders the race at
             // 1920 x 1080, so a preset sets the output size as a multiple of it, which the picture
             // is then scaled to the window from (supersampling when the window is smaller). Each
@@ -1379,6 +1583,66 @@ namespace RyGT
             };
             dlss.CheckedChanged += delegate { updateDlss(); };
             updateDlss();
+            // DLSS-210: fetches NVIDIA's official DLSS and Streamline files into the dlss folder on
+            // request; nothing NVIDIA ships with the build.
+            var nvidiaDownload = new Button { Text = "Download NVIDIA DLSS and Streamline (about 340 MB)", AutoSize = true, Margin = new Padding(22, 2, 0, 4) };
+            nvidiaDownload.Click += delegate
+            {
+                var games = Process.GetProcessesByName("GTSport");
+                bool gameRunning = games.Length != 0;
+                foreach (var process in games) process.Dispose();
+                if (gameRunning)
+                {
+                    MessageBox.Show(this, "Close GT Sport before adding or replacing the DLSS files.");
+                    return;
+                }
+                if (MessageBox.Show(this, "Download DLSS 310.9.16 and Streamline 2.14.16 from NVIDIA's GitHub pages into the dlss folder? They use NVIDIA's license terms. DLSS needs an NVIDIA RTX card.",
+                                    "NVIDIA DLSS", MessageBoxButtons.OKCancel) != DialogResult.OK) return;
+                nvidiaDownload.Enabled = false;
+                nvidiaDownload.Text = "Downloading...";
+                new System.Threading.Thread(delegate ()
+                {
+                    string error = null;
+                    string temp = Path.Combine(Path.GetTempPath(), "RyGT-NVIDIA");
+                    try
+                    {
+                        Directory.CreateDirectory(temp);
+                        Directory.CreateDirectory(dlssDir);
+                        System.Net.ServicePointManager.SecurityProtocol = System.Net.SecurityProtocolType.Tls12;
+                        const string dlssUrl = "https://github.com/NVIDIA/DLSS/raw/v310.9.16/";
+                        string zip = Path.Combine(temp, "streamline.zip");
+                        using (var web = new System.Net.WebClient())
+                        {
+                            foreach (var name in new[] { "nvngx_dlss.dll", "nvngx_dlssg.dll" })
+                                web.DownloadFile(dlssUrl + "lib/Windows_x86_64/rel/" + name, Path.Combine(dlssDir, name));
+                            web.DownloadFile(dlssUrl + "LICENSE.txt", Path.Combine(dlssDir, "NVIDIA-DLSS-LICENSE.txt"));
+                            web.DownloadFile("https://github.com/NVIDIA-RTX/Streamline/releases/download/v2.14.16/streamline-sdk-v2.14.16.zip", zip);
+                        }
+                        var wanted = new[] { "sl.interposer.dll", "sl.common.dll", "sl.dlss_g.dll", "sl.reflex.dll", "sl.pcl.dll", "NvLowLatencyVk.dll" };
+                        var missing = new List<string>(wanted);
+                        using (var archive = System.IO.Compression.ZipFile.OpenRead(zip))
+                            foreach (var entry in archive.Entries)
+                            {
+                                if (!entry.FullName.Replace('/', Path.DirectorySeparatorChar).EndsWith(Path.Combine("bin", "x64", entry.Name), StringComparison.OrdinalIgnoreCase)) continue;
+                                if (!wanted.Contains(entry.Name, StringComparer.OrdinalIgnoreCase)) continue;
+                                System.IO.Compression.ZipFileExtensions.ExtractToFile(entry, Path.Combine(dlssDir, entry.Name), true);
+                                missing.RemoveAll(name => String.Equals(name, entry.Name, StringComparison.OrdinalIgnoreCase));
+                            }
+                        if (missing.Count != 0) error = "Not in the Streamline package: " + String.Join(", ", missing);
+                    }
+                    catch (Exception e) { error = e.Message; }
+                    try { Directory.Delete(temp, true); } catch { }
+                    BeginInvoke((Action)delegate
+                    {
+                        nvidiaDownload.Enabled = true;
+                        nvidiaDownload.Text = "Download NVIDIA DLSS and Streamline (about 340 MB)";
+                        refreshDlss();
+                        if (error != null) MessageBox.Show(this, "Could not install the NVIDIA files: " + error);
+                    });
+                }) { IsBackground = true }.Start();
+            };
+            graphics.Controls.Add(nvidiaDownload);
+            graphics.Controls.SetChildIndex(nvidiaDownload, graphics.Controls.GetChildIndex(addDlss) + 1);
             framegen.CheckedChanged += delegate { if (framegen.Checked && dlssg.Checked) dlssg.Checked = false; };
             dlssg.CheckedChanged += delegate { if (dlssg.Checked && framegen.Checked) framegen.Checked = false; };
             // GTS-007: in the rain the game renders the scene a second time for the wet track's
@@ -1397,12 +1661,133 @@ namespace RyGT
             };
             dlss.CheckedChanged += delegate { updateMirror(); };
             updateMirror();
+            // The Graphics tab: one card per subject. The older controls stay hidden and hold the
+            // settings' logic; the unified choices below drive them.
+            Control rendererRow = graphics.Controls[1];
+            var sceneBox = graphics.Controls.OfType<DarkCheckBox>().First(c => c.Text.StartsWith("Scene"));
+            var sceneCombo = graphics.Controls.OfType<DarkComboBox>().First();
+            Control dlssSharpen = graphics.Controls.OfType<TableLayoutPanel>().LastOrDefault();
+            graphics.Visible = false;
+            bool syncing = false;
+            Func<TableLayoutPanel, string, Control, FlowLayoutPanel> row = delegate (TableLayoutPanel card, string name, Control control)
+            {
+                var line = new FlowLayoutPanel { AutoSize = true, BackColor = Color.Transparent, WrapContents = false, Margin = new Padding(0, 3, 0, 3) };
+                line.Controls.Add(new Label { Text = name, AutoSize = false, Width = 190, Height = 20, BackColor = Color.Transparent, Margin = new Padding(0, 6, 8, 0) });
+                line.Controls.Add(control);
+                card.Controls.Add(line);
+                return line;
+            };
+            Func<DarkComboBox> combo = () => new DarkComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 380, FlatStyle = FlatStyle.Flat };
+
+            display.Controls.Add(rendererRow);
+
+            var upscalerCard = Section(right, "Upscaler");
+            var upscaler = combo();
+            upscaler.Items.AddRange(new object[] { "Off", "AMD FSR 4", "AMD FSR 3", "AMD FSR 1", "NVIDIA DLSS", "Intel XeSS" });
+            upscaler.SelectedIndex = dlss.Checked ? 4 : !fsr.Checked ? 0 : !fsr3.Checked ? 3 : version.SelectedIndex == 1 ? 1 : version.SelectedIndex == 2 ? 5 : 2;
+            upscaler.SelectedIndexChanged += delegate
+            {
+                if (syncing) return;
+                int pick = upscaler.SelectedIndex;
+                if ((pick == 4 && !dlss.Enabled) || (pick == 5 && !File.Exists(Path.Combine(root, "libxess.dll"))))
+                {
+                    MessageBox.Show(this, "Download its files first, under Libraries.");
+                    syncing = true;
+                    upscaler.SelectedIndex = 0;
+                    syncing = false;
+                    pick = 0;
+                }
+                dlss.Checked = pick == 4;
+                fsr.Checked = pick != 0 && pick != 4;
+                if (pick != 0 && pick != 4)
+                {
+                    fsr3.Checked = pick != 3;
+                    if (pick != 3) version.SelectedIndex = pick == 1 ? 1 : pick == 5 ? 2 : 0;
+                }
+            };
+            row(upscalerCard, "Upscaler", upscaler);
+            // Below 100% lowers the scene (render scale); above it the upscaler's output grows.
+            var qualities = new[] {
+                new[] { "Ultra Performance - 33% (640 x 360)", "0", "" },
+                new[] { "Performance - 50% (960 x 540)", "1", "" },
+                new[] { "Balanced - 59% (1136 x 639)", "2", "" },
+                new[] { "Quality - 67% (1280 x 720)", "3", "" },
+                new[] { "Ultra Quality - 77% (1472 x 828)", "4", "" },
+                new[] { "Native - 100% (1920 x 1080)", "", "1" },
+                new[] { "Supersampling - 150% (2880 x 1620)", "", "1.5" },
+                new[] { "Supersampling - 170% (3264 x 1836)", "", "1.7" },
+                new[] { "Supersampling - 200% (3840 x 2160)", "", "2" },
+                new[] { "Supersampling - 300% (5760 x 3240)", "", "3" } };
+            var quality = combo();
+            foreach (var item in qualities) quality.Items.Add(item[0]);
+            string savedRatio = ReadStringSetting("GPU", "upscale_ratio", "0");
+            quality.SelectedIndex = sceneBox.Checked ? Math.Min(4, Math.Max(0, sceneCombo.SelectedIndex))
+                : Math.Max(5, Array.FindIndex(qualities, item => item[2] == savedRatio));
+            quality.SelectedIndexChanged += delegate
+            {
+                var item = qualities[quality.SelectedIndex];
+                sceneBox.Checked = item[1] != "";
+                if (item[1] != "") sceneCombo.SelectedIndex = int.Parse(item[1]);
+                try { WriteSetting("GPU", "upscale_ratio", item[2] != "" ? item[2] : "0"); }
+                catch (Exception e) { MessageBox.Show(this, "Could not save the setting: " + e.Message); }
+            };
+            row(upscalerCard, "Quality / Supersampling", quality);
+            upscalerCard.Controls.Add(new Label { Text = "Sizes are for 1080p output. Scene scaling needs a game restart.", AutoSize = true, BackColor = Color.Transparent, ForeColor = Dark.DimText, Tag = "heading", Margin = new Padding(0, 2, 0, 4) });
+
+            var frameCard = Section(right, "Frame generation");
+            var frames = combo();
+            frames.Items.AddRange(new object[] { "Off", "AMD FSR - about 2x frames", "NVIDIA DLSS - about 2x frames (RTX 40+)" });
+            frames.SelectedIndex = dlssg.Checked ? 2 : framegen.Checked ? 1 : 0;
+            frames.SelectedIndexChanged += delegate
+            {
+                if (frames.SelectedIndex == 2 && !dlssg.Enabled)
+                {
+                    MessageBox.Show(this, "Download the NVIDIA files first, under Libraries.");
+                    frames.SelectedIndex = 0;
+                    return;
+                }
+                framegen.Checked = frames.SelectedIndex == 1;
+                dlssg.Checked = frames.SelectedIndex == 2;
+            };
+            row(frameCard, "Frame generation", frames);
+
+            var sharpenCard = Section(right, "Sharpening");
+            // FSR's attenuation is 0 (sharpest) to 2 in thousandths; 0% turns the pass off.
+            int attenuation = ReadIntSetting("GPU", "rcas_attenuation", 250);
+            var fsrSharpen = new TrackBar { Minimum = 0, Maximum = 100, TickStyle = TickStyle.None, AutoSize = false, Width = 330, Height = 28, BackColor = Dark.Field,
+                Value = rcas.Checked ? Math.Max(0, Math.Min(100, 100 - attenuation / 20)) : 0 };
+            var fsrSharpenValue = new Label { Text = fsrSharpen.Value + "%", AutoSize = true, BackColor = Color.Transparent, Margin = new Padding(8, 6, 0, 0) };
+            fsrSharpen.ValueChanged += delegate
+            {
+                fsrSharpenValue.Text = fsrSharpen.Value + "%";
+                rcas.Checked = fsrSharpen.Value != 0;
+                try { WriteSetting("GPU", "rcas_attenuation", (100 - fsrSharpen.Value) * 20); }
+                catch (Exception e) { MessageBox.Show(this, "Could not save the setting: " + e.Message); }
+            };
+            row(sharpenCard, "FSR sharpening", fsrSharpen).Controls.Add(fsrSharpenValue);
+            if (dlssSharpen != null) sharpenCard.Controls.Add(dlssSharpen);
+
+            var librariesCard = Section(right, "Libraries");
+            var libraries = new FlowLayoutPanel { AutoSize = true, BackColor = Color.Transparent, FlowDirection = FlowDirection.TopDown, WrapContents = false };
+            foreach (var button in new[] { xessDownload, nvidiaDownload, addDlss })
+            {
+                button.Margin = new Padding(0, 2, 8, 4);
+                libraries.Controls.Add(button);
+            }
+            librariesCard.Controls.Add(libraries);
+
+            var performanceCard = Section(right, "Performance");
+            foreach (var box in new[] { wet, mirror })
+            {
+                box.Margin = new Padding(0, 2, 0, 2);
+                performanceCard.Controls.Add(box);
+            }
 
             // The direct renderer (shaders read game memory in place; Tokyo rain 42.7 fps vs 32.1)
             // is the only renderer since 2026-10-16; the old renderer's stored shaders stand in
             // while its own are built (D10), so it has no option any more.
 
-            var extras = Section(right, "Enhancements");
+            var extras = Section(left, "Enhancements");
             AddOption(extras, "Disable motion blur", "GPU", "disable_motion_blur", false);
             AddOption(extras, "PS4 Pro Mode (BROKEN)", "GPU", "ps4_pro", false);
             AddOption(extras, "Draw the UI at screen resolution", "GPU", "ui_hires", false);
@@ -1451,7 +1836,7 @@ namespace RyGT
             };
             batchRow.Controls.Add(batchLabel);
 
-            var logging = Section(right, "Logging"); // under Graphics, where there is room
+            var logging = Section(left, "Logging");
             logging.Controls.Add(new Label { Text = "stdout.log minimum level", AutoSize = true,
                 BackColor = Color.Transparent, Margin = new Padding(0, 0, 0, 4) });
             var logLevel = new DarkComboBox { Width = 170, DropDownStyle = ComboBoxStyle.DropDownList,
@@ -1530,12 +1915,12 @@ namespace RyGT
             side.Controls.Add(Item("Button bindings", "Controller and keyboard", "B", Badges[1], OpenBindings));
             side.Controls.Add(Item("Steering wheel", "Wheel, pedals, force feedback", "W", Badges[2], OpenWheel));
             side.Controls.Add(GroupLabel("Settings"));
-            side.Controls.Add(Item("Display", "Screen, resolution, refresh rate", "D", Badges[3], delegate { ShowPage(1); }));
-            side.Controls.Add(Item("Graphics", "FSR, DLSS, frame generation", "G", Badges[4], delegate { ShowPage(1); }));
-            side.Controls.Add(Item("Shaders", "Precompiling and compile pauses", "S", Badges[5], delegate { ShowPage(1); }));
+            side.Controls.Add(Item("Display", "Screen, resolution, refresh rate", "D", Badges[3], delegate { ShowPage(1); showGraphics(true); }));
+            side.Controls.Add(Item("Graphics", "FSR, DLSS, frame generation", "G", Badges[4], delegate { ShowPage(1); showGraphics(true); }));
+            side.Controls.Add(Item("Shaders", "Precompiling and compile pauses", "S", Badges[5], delegate { ShowPage(1); showGraphics(false); }));
             side.Controls.Add(GroupLabel("Game"));
             side.Controls.Add(Item("Set up", "Convert the game from your dump", "U", Badges[6], delegate { if (setup.Enabled) StartSetup(); }));
-            side.Controls.Add(Item("Open folder", "The RyGT folder in Explorer", "F", Badges[7], OpenFolder));
+            side.Controls.Add(Item("Open folder", "The RyGTS folder in Explorer", "F", Badges[7], OpenFolder));
 
             foreach (var column in new[] { settingsPage, controlsPage, side }) Stack(column);
             ShowPage(0);
@@ -1561,14 +1946,35 @@ namespace RyGT
         };
 
         /// Shows Home (0), Settings (1) or Controls (2), and marks its tab.
+        [DllImport("user32.dll")]
+        static extern IntPtr SendMessage(IntPtr window, int message, IntPtr wParam, IntPtr lParam);
+
+        // Page and tab changes appear at once: nothing is painted until all of it is laid out.
+        void WithoutRedraw(Action change)
+        {
+            if (!IsHandleCreated) { change(); return; }
+            const int WM_SETREDRAW = 0x000B;
+            SendMessage(Handle, WM_SETREDRAW, IntPtr.Zero, IntPtr.Zero);
+            SuspendLayout();
+            try { change(); }
+            finally
+            {
+                ResumeLayout(true);
+                SendMessage(Handle, WM_SETREDRAW, new IntPtr(1), IntPtr.Zero);
+                Refresh();
+            }
+        }
+
         public void ShowPage(int index)
         {
-            for (int i = 0; i < pages.Length; ++i)
+            WithoutRedraw(delegate
             {
-                pages[i].Visible = i == index;
-                tabs[i].Tag = i == index ? "nav-on" : "nav";
-                tabs[i].Invalidate();
-            }
+                for (int i = 0; i < pages.Length; ++i)
+                {
+                    pages[i].Visible = i == index;
+                    tabs[i].Tag = i == index ? "nav-on" : "nav";
+                }
+            });
         }
 
         void OpenPorts()
@@ -1616,19 +2022,19 @@ namespace RyGT
             if (background == null) return false;
             var client = ClientSize;
             if (client.Width <= 0 || client.Height <= 0) return false;
-            if (backdropRaw == null || backdropRaw.Size != client)
+            if (backdropRaw == null || (backdropRaw.Size != client && !resizing))
             {
                 if (backdropRaw != null) { backdropRaw.Dispose(); backdropDim.Dispose(); }
-                backdropRaw = new Bitmap(client.Width, client.Height);
+                backdropRaw = new Bitmap(client.Width, client.Height, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
                 using (var bg = Graphics.FromImage(backdropRaw))
                 {
                     float scale = Math.Max(client.Width / (float)background.Width, client.Height / (float)background.Height);
                     int width = (int)Math.Ceiling(background.Width * scale), height = (int)Math.Ceiling(background.Height * scale);
                     bg.Clear(Dark.Back);
-                    bg.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                    bg.InterpolationMode = resizing ? InterpolationMode.Low : InterpolationMode.HighQualityBicubic;
                     bg.DrawImage(background, client.Width - width, (client.Height - height) / 12, width, height);
                 }
-                backdropDim = new Bitmap(backdropRaw);
+                backdropDim = backdropRaw.Clone(new Rectangle(Point.Empty, client), System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
                 using (var bg = Graphics.FromImage(backdropDim))
                 using (var dim = new SolidBrush(Color.FromArgb(120, 8, 8, 8)))
                     bg.FillRectangle(dim, 0, 0, client.Width, client.Height);
@@ -1643,11 +2049,39 @@ namespace RyGT
             if (!DrawBackdrop(this, e.Graphics, false)) base.OnPaintBackground(e);
         }
 
+        // Dragging the window edge: the old backdrop and layout stay until it stops, then both update once.
+        bool resizing;
+        Size sizeAtStart;
+        protected override void OnResizeBegin(EventArgs e)
+        {
+            resizing = true;
+            sizeAtStart = ClientSize;
+            SuspendLayout();
+            base.OnResizeBegin(e);
+        }
+        protected override void OnResizeEnd(EventArgs e)
+        {
+            resizing = false;
+            ResumeLayout(ClientSize != sizeAtStart);
+            base.OnResizeEnd(e);
+            if (ClientSize == sizeAtStart) return; // the window was only moved
+            if (backdropRaw != null) { backdropRaw.Dispose(); backdropDim.Dispose(); backdropRaw = null; }
+            Invalidate(true);
+        }
+
         Image LoadBackground()
         {
             foreach (var path in new[] { Path.Combine(root, "launcher", "background.png"), Path.Combine(root, "launcher", "background.jpg") })
             {
-                try { if (File.Exists(path)) return Image.FromStream(new MemoryStream(File.ReadAllBytes(path))); }
+                try
+                {
+                    if (!File.Exists(path)) continue;
+                    var picture = Image.FromStream(new MemoryStream(File.ReadAllBytes(path)));
+                    if (picture.Width <= 2560) return picture;
+                    // A window never needs more; a 4K picture would hold 33 MB of memory.
+                    using (picture)
+                        return new Bitmap(picture, 2560, picture.Height * 2560 / picture.Width);
+                }
                 catch { }
             }
             return null;
@@ -2033,10 +2467,9 @@ namespace RyGT
         }
 
         // System memory (GPU.system_ram_gb): how much the game may use for things it can do
-        // without. With 16 GB the driver's pipeline cache file (it grows past 1 GB and is loaded
-        // whole, then copied again when saved) is off and fewer freed GPU images are kept for
-        // reuse. Tokyo rain race, committed memory: 32 GB setting ~11 GB average / 13.5 GB peak,
-        // 16 GB setting ~8.6 / 9.0 GB. Picked from the installed RAM the first time.
+        // without. Both profiles retain the shader store, startup precompilation and persistent
+        // pipeline cache. The 16 GB profile keeps fewer freed GPU images for reuse.
+        // Picked from installed RAM the first time; shader precompilation has its own checkbox.
         // Screen shape (GPU.aspect_ratio, GTS-009 in renderer patch 0051): GT Sport draws a 16:9
         // picture. "Fill the screen" widens the race camera to the shape of the game's window or
         // screen and stretches the picture over it (ultrawide without black bars; the HUD and menus
@@ -2071,10 +2504,10 @@ namespace RyGT
             {
                 bool large = ram.SelectedIndex == 1;
                 WriteSetting("GPU", "system_ram_gb", large ? 32 : 16);
-                WriteSetting("Vulkan", "pipeline_cache_enabled", large);
+                WriteSetting("Vulkan", "pipeline_cache_enabled", true);
                 WriteSetting("GPU", "image_recycle_mb", large ? 512 : 128);
             };
-            if (stored == 0)
+            if (stored == 0 || !ReadSetting("Vulkan", "pipeline_cache_enabled", true))
             {
                 try { apply(); } catch { }
             }
@@ -2113,8 +2546,8 @@ namespace RyGT
             var enabled = AddOption(panel, "Scene render scale (EXPERIMENTAL)",
                 "GPU", "experimental_render_scale", false);
             var preset = new DarkComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 300 };
-            var values = new[] { "ultra_performance", "performance", "balanced", "quality", "dlaa" };
-            preset.Items.AddRange(new object[] { "33.3% - Ultra Performance", "50% - Performance", "58.8% - Balanced", "66.7% - Quality", "100% - Native" });
+            var values = new[] { "ultra_performance", "performance", "balanced", "quality", "ultra_quality", "dlaa" };
+            preset.Items.AddRange(new object[] { "33% - Ultra Performance (1080p to 640 x 360)", "50% - Performance (1080p to 960 x 540)", "59% - Balanced (1080p to 1136 x 639)", "67% - Quality (1080p to 1280 x 720)", "77% - Ultra Quality (1080p to 1472 x 828)", "100% - Native (1920 x 1080)" });
             preset.SelectedIndex = Math.Max(0, Array.IndexOf(values,
                 ReadStringSetting("GPU", "experimental_render_preset", "performance")));
             preset.Enabled = enabled.Checked;
@@ -2171,7 +2604,7 @@ namespace RyGT
             experimentalSceneSize = size;
             WriteSetting("GPU", "experimental_render_width", size.Width);
             WriteSetting("GPU", "experimental_render_height", size.Height);
-            if (dlss) WriteSetting("GPU", "dlss_quality", preset);
+            if (dlss) WriteSetting("GPU", "dlss_quality", preset == "ultra_quality" ? "quality" : preset);
             else if (ReadSetting("GPU", "fsr_enabled", false)) WriteSetting("GPU", "upscale_ratio", "0");
         }
 
@@ -2330,11 +2763,18 @@ namespace RyGT
             status.Text = text;
         }
 
-        /// RyGT.exe --setup: the same set up without the window, from the folders in RyGT.ini.
+        /// RyGTS.exe --setup: the same set up without the window, from the folders in RyGT.ini.
         public int SetupWithoutWindow()
         {
             try { setupLogPath = LogFiles.Prepare(root, "setup.log"); RunSetup(); return 0; }
             catch (Exception e) { Log("ERROR: " + e.Message); return 1; }
+        }
+
+        void ShowSetupDumpHelp(Exception error)
+        {
+            if (error is SetupDumpException)
+                MessageBox.Show(this, error.Message, "Check your game dump and system modules",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
 
         void StartSetup()
@@ -2352,14 +2792,19 @@ namespace RyGT
             var thread = new Thread(delegate ()
             {
                 bool ok = false;
+                Exception failure = null;
                 try { RunSetup(); ok = true; }
-                catch (Exception e) { Log("ERROR: " + e.Message); }
+                catch (Exception e) { failure = e; Log("ERROR: " + e.Message); }
                 BeginInvoke(new Action(delegate
                 {
                     busy = false;
                     RefreshState();
                     if (ok) status.Text = "Set up finished. Press Play.";
-                    else status.Text = "Set up failed; see the log.";
+                    else
+                    {
+                        status.Text = "Set up failed; see the log.";
+                        ShowSetupDumpHelp(failure);
+                    }
                 }));
             });
             thread.IsBackground = true;
@@ -2392,7 +2837,8 @@ namespace RyGT
             foreach (var name in FirmwareModules)
             {
                 var found = FindModule(settings.Modules, name);
-                if (found == null) throw new Exception("System module " + name + " was not found under " + settings.Modules + ".");
+                if (found == null) throw new SetupDumpException("System module " + name + ".sprx was not found under " + settings.Modules + ".\n\n" +
+                    "Re-dump the complete sys_modules folder from your PS4, including this module. Select the new folder, then run Set up again.");
                 firmware[name] = found;
             }
             foreach (var name in OptionalFirmwareModules)
@@ -2425,7 +2871,7 @@ namespace RyGT
             // 2. Convert.
             SetStatus("Converting the game for Windows (this takes a while)...");
             string converter = Path.Combine(root, "converter", "ryty.exe");
-            if (!File.Exists(converter)) throw new Exception("converter\\ryty.exe is missing from the RyGT folder.");
+            if (!File.Exists(converter)) throw new Exception("converter\\ryty.exe is missing from the RyGTS folder.");
             string staging = Path.Combine(work, "game-rebuild");
             string stagedExe = Path.Combine(staging, "GTSport.exe");
             string stagedModules = Path.Combine(staging, "app0", "sce_module");
@@ -2434,6 +2880,7 @@ namespace RyGT
                 Path.Combine(work, "port-report.json") + "\" \"" + Path.Combine(work, "eboot.elf") + "\" \"" + stagedExe + "\"", work);
             if (code != 0 || !File.Exists(stagedExe)) throw new Exception("The converter failed (exit code " + code + ").");
             GameExe.Prepare(stagedExe);
+            GameExe.ApplyVersionInfo(stagedExe);
             // Keep the previous executable until conversion and preparation have both succeeded.
             Directory.CreateDirectory(Path.Combine(root, "app0", "sce_module"));
             foreach (string module in Directory.GetFiles(stagedModules))
@@ -2442,7 +2889,7 @@ namespace RyGT
             if (File.Exists(registry)) File.Copy(registry, Path.Combine(root, "GTSport.registry.json"), true);
             if (File.Exists(Exe)) File.Replace(stagedExe, Exe, null);
             else File.Move(stagedExe, Exe);
-            Log(Wine.Detected ? "Made GTSport.exe a Windows program." : "Gave GTSport.exe the ryGT icon and made it a Windows program.");
+            Log(Wine.Detected ? "Made GTSport.exe a Windows program." : "Gave GTSport.exe the Gran Turismo Sport icon and made it a Windows program.");
 
             // 3. app0: the game's files, the update's over the base game's, linked rather than copied.
             SetStatus("Linking the game files...");
@@ -2464,7 +2911,7 @@ namespace RyGT
             // 6. Shaders other players have met, prepared from this game's own files, into the
             // shader folder every RyGT folder shares.
             UsePortableShaderCache();
-            EnsureShaderCacheIdentity();
+            RequireGameClosedForShaderPreparation();
             if (File.Exists(ShaderPack))
             {
                 SetStatus("Preparing shaders from your game files (a few minutes)...");
@@ -2558,11 +3005,10 @@ namespace RyGT
         string ShaderPack { get { return Path.Combine(root, "tools", "adcpatch", "shaders.pack"); } }
         string ShaderPackStamp { get { return Path.Combine(ShaderFolder, "shaders-pack.txt"); } }
 
-        void EnsureShaderCacheIdentity()
+        void RequireGameClosedForShaderPreparation()
         {
             if (Process.GetProcessesByName("GTSport").Length != 0)
                 throw new IOException("Close the game before checking or updating its shader cache.");
-            ShaderCacheIdentity.Ensure(ShaderFolder, Exe, Path.Combine(root, "libs", "libSceVideoOut.prx"), Log);
         }
 
         bool ShadersOutdated()
@@ -2736,7 +3182,7 @@ namespace RyGT
                 if (Native.CreateHardLink(target, pair.Value, IntPtr.Zero)) { linked++; hard++; continue; }
                 if (Wine.Detected) { unixLinks[target] = pair.Value; continue; }
                 if (Native.CreateSymbolicLink(target, pair.Value, 2)) { linked++; symbolic++; continue; } // needs Developer Mode
-                throw new Exception("Could not link " + pair.Value + ". Put the RyGT folder on the same drive as the game, " +
+                throw new Exception("Could not link " + pair.Value + ". Put the RyGTS folder on the same drive as the game, " +
                                     "or turn on Developer Mode in Windows settings.");
             }
             if (Wine.Detected)
@@ -2766,7 +3212,7 @@ namespace RyGT
                 string problem = ReadProblem(Path.Combine(app0, pair.Key), new FileInfo(pair.Value).Length);
                 if (problem != null)
                     throw new Exception("app0\\" + pair.Key + " " + problem + " after linking it to " + pair.Value +
-                                        ". Put the RyGT folder on the same drive as the game and press Set up again.");
+                                        ". Put the RyGTS folder on the same drive as the game and press Set up again.");
             }
             Log("Linked " + linked + " game files (" + hard + " hard links, " + symbolic + " symbolic links) and " +
                 dirs.Count + " folders into app0.");
@@ -2798,7 +3244,7 @@ namespace RyGT
                 CopyDirectory(dir, Path.Combine(destination, Path.GetFileName(dir)));
         }
 
-        // Everything RyGT makes stays in the RyGT folder (portable), and the shaders are in plain sight
+        // Everything RyGTS makes stays in the RyGTS folder (portable), and the shaders are in plain sight
         // in <RyGT>\shaders (the renderer's cache folder), never in AppData. Older folders kept them in
         // user\cache: a real folder there is moved to shaders once. Builds from 2026-10-18 to 10-20
         // made user\cache a link to one AppData folder shared by every RyGT folder; its shaders are
@@ -2906,7 +3352,7 @@ namespace RyGT
             if (dataProblem != null)
             {
                 MessageBox.Show(this, "GT Sport's data index app0\\gt.idx " + dataProblem + ", so the game can't start.\n\n" +
-                                "Press Set up again. If the RyGT folder is on a different drive than the game, move it " +
+                                "Press Set up again. If the RyGTS folder is on a different drive than the game, move it " +
                                 "to the game's drive first.");
                 return;
             }
@@ -2919,6 +3365,7 @@ namespace RyGT
             bool verified = false;
             var thread = new Thread(delegate ()
             {
+                Exception failure = null;
                 try
                 {
                     SetStatus("Checking the game executable...");
@@ -2929,8 +3376,12 @@ namespace RyGT
                     });
                     if (OldShaderCacheExists()) SetStatus("Moving your shaders to the shaders folder (once)...");
                     UsePortableShaderCache();
-                    EnsureShaderCacheIdentity();
-                    // Folders set up by an earlier RyGT.exe or adcpatch get the offline livery scripts
+                    // Repair the old 16 GB profile even when Settings was never opened.
+                    if (ReadIntSetting("GPU", "system_ram_gb", 0) == 16 &&
+                        !ReadSetting("Vulkan", "pipeline_cache_enabled", true))
+                        WriteSetting("Vulkan", "pipeline_cache_enabled", true);
+                    RequireGameClosedForShaderPreparation();
+                    // Folders set up by an earlier RyGTS.exe or adcpatch get the offline livery scripts
                     // (again) now (a few seconds).
                     if (GameScriptsOutdated() && Directory.Exists(gameDir))
                     {
@@ -2947,12 +3398,17 @@ namespace RyGT
                     }
                     verified = true;
                 }
-                catch (Exception e) { Log("ERROR: " + e.Message); }
+                catch (Exception e) { failure = e; Log("ERROR: " + e.Message); }
                 BeginInvoke(new Action(delegate
                 {
                     busy = false;
                     RefreshState();
-                    if (!verified) { status.Text = "Game verification/rebuild failed; see the log. The game was not started."; return; }
+                    if (!verified)
+                    {
+                        status.Text = "Game verification/rebuild failed; see the log. The game was not started.";
+                        ShowSetupDumpHelp(failure);
+                        return;
+                    }
                     StartGame(root, settings.HddStreaming, experimentalSceneSize);
                     status.Text = "GT Sport is starting. Logs: logs\\stdout.log and logs\\stderr.log.";
                 }));
@@ -2966,8 +3422,11 @@ namespace RyGT
         static void StartGame(string root, bool hddStreaming, Size? sceneSize)
         {
             string exe = Path.Combine(root, "GTSport.exe");
-            // Folders set up by an earlier RyGT.exe get the icon and the Windows subsystem now.
+            // Preserve GT Sport metadata while migrating the launcher publisher field from older installs.
+            try { GameExe.ApplyVersionInfo(exe); } catch (Exception e) { AppendSetupLog(root, "Could not update game publisher metadata: " + e.Message); }
+            // Folders set up by an earlier RyGT launcher get the icon and Windows subsystem now.
             try { if (!GameExe.IsPrepared(exe)) GameExe.Prepare(exe); } catch { }
+            ThreadPool.QueueUserWorkItem(delegate { AmdSoftware.EnsureGameEntry(root, exe); });
             ThreadPool.QueueUserWorkItem(delegate
             {
                 bool recoveredOnce = false;
@@ -3090,9 +3549,9 @@ namespace RyGT
                 catch (AbandonedMutexException) { owns = true; }
                 if (!owns)
                 {
-                    MessageBox.Show("RyGT Launcher is already running.\n\n" +
-                        "Please close the existing launcher, then open RyGT Launcher again.",
-                        "RyGT Launcher", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    MessageBox.Show("RyGTS Launcher is already running.\n\n" +
+                        "Please close the existing launcher, then open RyGTS Launcher again.",
+                        "RyGTS Launcher", MessageBoxButtons.OK, MessageBoxIcon.Error);
                     return 2;
                 }
                 try { return RunLauncher(args); }
@@ -3105,7 +3564,7 @@ namespace RyGT
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             // Portable: the tools' work folders (and anything else asking for a temporary folder) go
-            // into the RyGT folder instead of AppData\Local\Temp; the tools delete theirs when done.
+            // into the RyGTS folder instead of AppData\Local\Temp; the tools delete theirs when done.
             try
             {
                 string temp = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "temp");

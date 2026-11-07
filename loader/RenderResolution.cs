@@ -16,6 +16,7 @@ namespace RyGT
                 case "performance": ratio = 0.5; break;
                 case "balanced": ratio = 1.0 / 1.7; break;
                 case "quality": ratio = 1.0 / 1.5; break;
+                case "ultra_quality": ratio = 1.0 / 1.3; break;
                 case "dlaa": ratio = 1.0; break;
                 default: throw new ArgumentException("Unknown render-scale preset.", "preset");
             }

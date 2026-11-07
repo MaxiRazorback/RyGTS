@@ -1,4 +1,4 @@
-// RyGT loader: the controller and keyboard bindings window (like shadPS4's controller settings).
+// RyGTS launcher: the controller and keyboard bindings window (like shadPS4's controller settings).
 // It edits user\input_config\default.ini, the bindings file shadGT reads (unified input config),
 // and keeps every line it does not manage (hotkeys, mouse bindings, colours) as it is.
 // SPDX-License-Identifier: GPL-2.0-only
@@ -97,7 +97,7 @@ namespace RyGT
         {
             this.saveKeyboardPlayer = saveKeyboardPlayer;
             path = Path.Combine(root, "user", "input_config", "default.ini");
-            Text = "ryGT - Controls";
+            Text = "RyGTS - Controls";
             Font = new Font("Segoe UI", 9f);
             StartPosition = FormStartPosition.CenterParent;
             ClientSize = new Size(780, 760);
@@ -290,7 +290,7 @@ namespace RyGT
             int player = keyboardPlayer.SelectedIndex + 1;
             string keyboardTarget = player > 1 ? ":" + player : "";
             var text = new StringBuilder();
-            text.AppendLine("# Made by RyGT.exe (Controls). Lines it does not manage are kept at the end.");
+            text.AppendLine("# Made by RyGTS.exe (Controls). Lines it does not manage are kept at the end.");
             text.AppendLine();
             text.AppendLine("# Keyboard bindings" + (player > 1 ? " (player " + player + ")" : ""));
             foreach (var row in Rows)

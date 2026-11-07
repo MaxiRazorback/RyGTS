@@ -49,7 +49,7 @@ csc /target:exe /out:LoggingTests.exe loader\Logging.cs loader\LoggingTests.cs
 LoggingTests.exe
 ```
 
-Place the freshly built `RyGT.exe` beside `LoggingTests.exe`; the test also
+Place the freshly built `RyGTS.exe` beside `LoggingTests.exe`; the test also
 checks persistence against the actual launcher's settings class.
 
 `renderer/stdout_level.h` is the testable copy of the header carried by patch

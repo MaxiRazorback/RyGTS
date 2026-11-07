@@ -1,10 +1,10 @@
-# Running RyGT on Linux (Steam Proton)
+# Running RyGTS on Linux (Steam Proton)
 
-RyGT is a Windows build. On Linux it runs through Proton, Steam's version of Wine, or through Wine
+RyGTS is a Windows build. On Linux it runs through Proton, Steam's version of Wine, or through Wine
 itself. It needs **Proton 10 or newer** (or Wine 10 or newer): older versions lack Windows
-functions that RyGT's libraries use, and the game does not start.
+functions that RyGTS's libraries use, and the game does not start.
 
-> **Status:** RyGT is checked against Proton 10 and 11: every program and library in a release
+> **Status:** RyGTS is checked against Proton 10 and 11: every program and library in a release
 > loads there, and under Wine the launcher links the game's files with Linux symbolic links. The
 > first test under Proton got through Set up, the menus and into a race. Please report what works
 > and what doesn't.
@@ -18,11 +18,11 @@ functions that RyGT's libraries use, and the game does not start.
 
 ## Setting up with Steam
 
-1. Unzip the release into a folder in your home folder, for example `~/Games/RyGT`. Keep the
+1. Unzip the release into a folder in your home folder, for example `~/Games/RyGTS`. Keep the
    game dump in your home folder or on a Steam library drive too, since Proton may not see other
    places. If both are on the same drive, Set up hard-links the game's files; otherwise it makes
    symbolic links. Both work.
-2. In Steam, choose **Games > Add a Non-Steam Game to My Library > Browse**, pick `RyGT.exe`,
+2. In Steam, choose **Games > Add a Non-Steam Game to My Library > Browse**, pick `RyGTS.exe`,
    then **Add Selected Programs**.
 3. Right-click the new entry, open **Properties > Compatibility**, tick **Force the use of a
    specific Steam Play compatibility tool** and pick **Proton 10.0** or newer.
@@ -34,8 +34,8 @@ The first boot builds shaders on the splash screen, as on Windows.
 
 ## Where things are
 
-- Logs: the `logs` folder in the RyGT folder, as on Windows.
-- Shaders: the `shaders` folder in the RyGT folder. Everything RyGT makes stays in its folder; only the
+- Logs: the `logs` folder in the RyGTS folder, as on Windows.
+- Shaders: the `shaders` folder in the RyGTS folder. Everything RyGTS makes stays in its folder; only the
   game files are linked from where they are.
 
 ## Controllers and wheels
@@ -54,8 +54,8 @@ The first boot builds shaders on the splash screen, as on Windows.
 
 ## Without Steam (Wine, Lutris, Bottles)
 
-Use Wine 10 or newer with a 64-bit prefix and a Vulkan driver, and run `wine RyGT.exe` from the
-RyGT folder. In Lutris or Bottles, add `RyGT.exe` with a Wine 10 or newer runner.
+Use Wine 10 or newer with a 64-bit prefix and a Vulkan driver, and run `wine RyGTS.exe` from the
+RyGTS folder. In Lutris or Bottles, add `RyGTS.exe` with a Wine 10 or newer runner.
 
 ## If something goes wrong
 
@@ -63,12 +63,12 @@ RyGT folder. In Lutris or Bottles, add `RyGT.exe` with a Wine 10 or newer runner
   to `PROTON_LOG=1 %command%`; Proton writes `steam-<number>.log` to your home folder.
 - Errors that mention `msvcp140` or `vcruntime140`: install Microsoft's Visual C++ runtime into the
   prefix with protontricks: `protontricks <number> vcrun2022`.
-- "Could not link ..." during Set up: move the RyGT folder and the game dump into your home folder.
+- "Could not link ..." during Set up: move the RyGTS folder and the game dump into your home folder.
 
 On a Steam Deck the steps are the same, in Desktop Mode. Expect lower frame rates than on a
 desktop PC: GT Sport is heavy on the CPU.
 
-## What RyGT does differently under Wine
+## What RyGTS does differently under Wine
 
 - The launcher links `app0` with Linux symbolic links (`ln -s`),
   because Wine before 11 cannot make Windows links.

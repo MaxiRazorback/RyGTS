@@ -45,7 +45,7 @@ namespace RyGT
                     Check(Array.Exists(archives, path => File.ReadAllText(path) == "legacy"), "legacy contents retained");
                     Check(Array.Exists(archives, path => File.ReadAllText(path) == "old"), "prior contents retained");
                 }
-                var assembly = System.Reflection.Assembly.LoadFrom(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "RyGT.exe"));
+                var assembly = System.Reflection.Assembly.LoadFrom(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "RyGTS.exe"));
                 var settingsType = assembly.GetType("RyGT.Settings", true);
                 string ini = Path.Combine(root, "RyGT.ini");
                 var settings = Activator.CreateInstance(settingsType, new object[] { ini });

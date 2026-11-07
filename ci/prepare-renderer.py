@@ -1,6 +1,7 @@
-"""Check out the exact renderer source revision used by this RyGT release."""
+"""Check out the exact renderer source revision used by this RyGTS release."""
 import argparse
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -14,8 +15,22 @@ def prepare(destination):
     root = Path(__file__).resolve().parent.parent
     source = json.loads((root / "renderer/source.json").read_text(encoding="utf-8"))
     revision = source["commit"]
+    expected = os.environ.get("RENDERER_SHA")
+    if expected and not re.fullmatch(r"[0-9a-f]{40}", expected):
+        raise SystemExit("Invalid expected renderer SHA")
+    if revision == "HEAD":
+        if expected:
+            revision = expected
+        else:
+            ref = "refs/heads/" + source["branch"]
+            result = subprocess.check_output(["git", "ls-remote", "--exit-code", source["repository"], ref], text=True).splitlines()
+            if len(result) != 1 or len(result[0].split()) != 2 or result[0].split()[1] != ref:
+                raise SystemExit("Cannot resolve renderer branch")
+            revision = result[0].split()[0]
+    elif expected and expected != revision:
+        raise SystemExit("Expected renderer SHA differs from source pin")
     if not re.fullmatch(r"[0-9a-f]{40}", revision):
-        raise SystemExit("Renderer source must be pinned to a full commit SHA")
+        raise SystemExit("Renderer source must be HEAD or a full commit SHA")
     destination = Path(destination).resolve()
     if destination.exists():
         raise SystemExit(f"Refusing to overwrite existing source: {destination}")
