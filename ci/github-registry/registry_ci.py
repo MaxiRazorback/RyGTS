@@ -81,6 +81,13 @@ def resolve(channel=None):
         needed = 'true'
     with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
         output.write(f'commit={commit}\nrenderer_commit={renderer}\nversion={package_version}\nneeded={needed}\n')
+    if os.environ.get('GITHUB_STEP_SUMMARY'):
+        with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as output:
+            output.write('### Resolved build sources\n\n'
+                         f'- Source: [`{commit}`](https://gitlab.com/rygt-team/RyGTS/-/commit/{commit})\n'
+                         f'- Renderer: [`{renderer}`](https://gitlab.com/rygt-team/shadGT/-/commit/{renderer})\n'
+                         f'- Channels: {", ".join(channels)}\n'
+                         f'- Build needed: `{needed}`\n\n')
     print(f'GitLab development: {commit}; renderer: {renderer}; channel: {", ".join(channels)}; build needed: {needed}')
 
 
@@ -128,7 +135,7 @@ def publish(channel=None):
         uploads.extend(((channel, archive), (channel, checksum)))
         markers.append((channel, marker))
     token = os.environ['GITLAB_PACKAGE_TOKEN']
-    # Marker is uploaded last: scheduled checks only skip fully published packages.
+    # Marker is uploaded last: source resolution only skips fully published packages.
     for channel, file in uploads + markers:
         url = API + '/packages/generic/' + channel + '/' + package_version + '/' + file.name
         with file.open('rb') as stream:
@@ -146,11 +153,15 @@ def publish(channel=None):
         if remote_digest != local_digest:
             raise RuntimeError('Uploaded package checksum mismatch')
         print('Published and verified:', url)
-    with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as output:
-        output.write(f'CI build `{commit}`, renderer `{renderer}`\n\n')
-        for channel, archive, checksum, _ in packages:
-            output.write(f'{channel}: [ZIP]({API}/packages/generic/{channel}/{package_version}/{archive.name})'
-                         f' | [SHA-256]({API}/packages/generic/{channel}/{package_version}/{checksum.name})\n\n')
+    if os.environ.get('GITHUB_STEP_SUMMARY'):
+        with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as output:
+            output.write('### Verified CI packages\n\n'
+                         f'Source: [`{commit}`](https://gitlab.com/rygt-team/RyGTS/-/commit/{commit})\n\n'
+                         f'Renderer: [`{renderer}`](https://gitlab.com/rygt-team/shadGT/-/commit/{renderer})\n\n')
+            for channel, archive, checksum, digest in packages:
+                output.write(f'{channel}: [ZIP]({API}/packages/generic/{channel}/{package_version}/{archive.name})'
+                             f' | [SHA-256 file]({API}/packages/generic/{channel}/{package_version}/{checksum.name})\n\n'
+                             f'SHA-256: `{digest}`\n\n')
 
 
 if __name__ == '__main__':

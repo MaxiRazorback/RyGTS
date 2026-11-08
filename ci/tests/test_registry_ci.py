@@ -3,6 +3,8 @@ import io
 import json
 import os
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -26,7 +28,22 @@ def policy(commit='HEAD', repository=REPOSITORY, branch='ryty-gpu'):
     return {'repository': repository, 'branch': branch, 'commit': commit}
 
 
-class RendererRevisionTests(unittest.TestCase):
+class IsolatedWorkflowFiles(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.workflow_folder = Path(temporary.name)
+        self.summary = self.workflow_folder / 'summary'
+        self.workflow_output = self.workflow_folder / 'output'
+        environment = patch.dict(os.environ, {
+            'GITHUB_STEP_SUMMARY': str(self.summary), 'GITHUB_OUTPUT': str(self.workflow_output),
+            'SOURCE_OVERRIDE_SHA': '', 'RENDERER_OVERRIDE_SHA': '', 'FORCE_BUILD': 'false',
+        })
+        environment.start(); self.addCleanup(environment.stop)
+        os.environ.pop('CI_CHANNEL', None)
+
+
+class RendererRevisionTests(IsolatedWorkflowFiles):
     def test_pinned_revision_uses_source_policy_only(self):
         with patch.object(registry.urllib.request, 'urlopen', return_value=response(policy(RENDERER))) as request:
             self.assertEqual(registry.renderer_revision(SOURCE), RENDERER)
@@ -62,7 +79,7 @@ class RendererRevisionTests(unittest.TestCase):
                 registry.version(source, renderer)
 
 
-class ResolveTests(unittest.TestCase):
+class ResolveTests(IsolatedWorkflowFiles):
     def run_resolve(self, markers, channel=None):
         requests = []
         def open_url(url, timeout):
@@ -90,6 +107,11 @@ class ResolveTests(unittest.TestCase):
         self.assertEqual(output, {'commit': SOURCE, 'renderer_commit': RENDERER, 'version': f'development-{SOURCE}-renderer-{RENDERER}', 'needed': 'false'})
         self.assertEqual(sum('/repository/branches/development' in url for url in requests), 1)
         self.assertTrue(all(output['version'] in url for url in requests[1:]))
+        summary = self.summary.read_text()
+        self.assertIn(f'[`{SOURCE}`](https://gitlab.com/rygt-team/RyGTS/-/commit/{SOURCE})', summary)
+        self.assertIn(f'[`{RENDERER}`](https://gitlab.com/rygt-team/shadGT/-/commit/{RENDERER})', summary)
+        self.assertNotIn('/packages/generic/', summary)
+        self.assertNotIn('[ZIP]', summary)
 
     def test_missing_pair_requires_build(self):
         output, _ = self.run_resolve({'ci': None, 'debug-ci': None})
@@ -122,7 +144,7 @@ class ResolveTests(unittest.TestCase):
             request.assert_not_called()
 
 
-class PublishTests(unittest.TestCase):
+class PublishTests(IsolatedWorkflowFiles):
     def test_matching_pair_publishes_both_channels_with_markers_last(self):
         import hashlib
         import zipfile
@@ -157,6 +179,12 @@ class PublishTests(unittest.TestCase):
                 self.assertTrue(all(f'development-{SOURCE}-renderer-{RENDERER}/' in url for url in order))
                 self.assertTrue(all(url.endswith('/CI-BUILD.json') for url in order[-2:]))
                 self.assertTrue(all(json.loads(uploads[url])['renderer_commit'] == RENDERER for url in order[-2:]))
+                summary = (root / 'summary').read_text()
+                self.assertIn(f'/-/commit/{SOURCE}', summary)
+                self.assertIn(f'/-/commit/{RENDERER}', summary)
+                for variant in variants:
+                    self.assertIn(f'SHA-256: `{variant["sha256"]}`', summary)
+                    self.assertIn(variant['archive'], summary)
             finally:
                 os.chdir(original)
 
@@ -224,12 +252,30 @@ class PublishTests(unittest.TestCase):
                 self.assertEqual(len(order), 3)
                 self.assertTrue(all('/debug-ci/' in url for url in order))
                 self.assertTrue(order[-1].endswith('/CI-BUILD.json'))
+                self.assertIn(f'SHA-256: `{digest}`', (root / 'summary').read_text())
                 with patch.dict(os.environ, {'SOURCE_SHA': SOURCE, 'RENDERER_SHA': RENDERER}), patch.object(registry.urllib.request, 'urlopen') as request:
                     with self.assertRaisesRegex(RuntimeError, 'channels do not match'):
                         registry.publish('ci')
                     request.assert_not_called()
             finally:
                 os.chdir(original)
+
+
+class WorkflowEnvironmentIsolationTests(unittest.TestCase):
+    def test_fixtures_do_not_write_hosted_workflow_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary, output = root / 'host-summary', root / 'host-output'
+            summary.write_text('real hosted summary\n')
+            output.write_text('real_output=unchanged\n')
+            environment = dict(os.environ, GITHUB_ACTIONS='true',
+                               GITHUB_STEP_SUMMARY=str(summary), GITHUB_OUTPUT=str(output))
+            completed = subprocess.run([sys.executable, str(Path(__file__).resolve()),
+                                        'RendererRevisionTests', 'ResolveTests', 'PublishTests'],
+                                       env=environment, capture_output=True, text=True)
+            self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+            self.assertEqual(summary.read_text(), 'real hosted summary\n')
+            self.assertEqual(output.read_text(), 'real_output=unchanged\n')
 
 
 if __name__ == '__main__':
