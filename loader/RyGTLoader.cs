@@ -1732,6 +1732,9 @@ namespace RyGT
                 catch (Exception e) { MessageBox.Show(this, "Could not save the setting: " + e.Message); }
             };
             row(upscalerCard, "Quality / Supersampling", quality);
+            // PERF-210: AMD Anti-Lag (VK_AMD_anti_lag; AMD GPUs whose driver has it). Frame
+            // generation paces its own frames, so Anti-Lag is off while it is on.
+            var antiLag = AddOption(upscalerCard, "", "GPU", "anti_lag", false);
             upscalerCard.Controls.Add(new Label { Text = "Sizes are for 1080p output. Scene scaling needs a game restart.", AutoSize = true, BackColor = Color.Transparent, ForeColor = Dark.DimText, Tag = "heading", Margin = new Padding(0, 2, 0, 4) });
 
             var frameCard = Section(right, "Frame generation");
@@ -1750,6 +1753,15 @@ namespace RyGT
                 dlssg.Checked = frames.SelectedIndex == 2;
             };
             row(frameCard, "Frame generation", frames);
+            Action updateAntiLag = delegate
+            {
+                bool generated = frames.SelectedIndex != 0;
+                antiLag.Enabled = !generated;
+                antiLag.Text = generated ? "AMD Anti-Lag (off while frame generation is on)"
+                                         : "AMD Anti-Lag: lower input lag (AMD GPUs)";
+            };
+            frames.SelectedIndexChanged += delegate { updateAntiLag(); };
+            updateAntiLag();
 
             var sharpenCard = Section(right, "Sharpening");
             // FSR's attenuation is 0 (sharpest) to 2 in thousandths; 0% turns the pass off.
@@ -3409,7 +3421,11 @@ namespace RyGT
                         ShowSetupDumpHelp(failure);
                         return;
                     }
-                    StartGame(root, settings.HddStreaming, experimentalSceneSize);
+                    // PERF-210: Anti-Lag only without frame generation (FSR or DLSS).
+                    bool antiLag = ReadSetting("GPU", "anti_lag", false) &&
+                                   !ReadSetting("GPU", "framegen_enabled", false) &&
+                                   !ReadSetting("GPU", "dlssg_enabled", false);
+                    StartGame(root, settings.HddStreaming, experimentalSceneSize, antiLag);
                     status.Text = "GT Sport is starting. Logs: logs\\stdout.log and logs\\stderr.log.";
                 }));
             });
@@ -3419,7 +3435,7 @@ namespace RyGT
 
         /// Starts GTSport.exe with session log rotation and waits for GPU recovery if Vulkan loses
         /// its device.
-        static void StartGame(string root, bool hddStreaming, Size? sceneSize)
+        static void StartGame(string root, bool hddStreaming, Size? sceneSize, bool antiLag)
         {
             string exe = Path.Combine(root, "GTSport.exe");
             // Preserve GT Sport metadata while migrating the launcher publisher field from older installs.
@@ -3451,6 +3467,7 @@ namespace RyGT
                         RenderResolution.ConfigureStart(start, root, sceneSize);
                         start.EnvironmentVariables["RYGT_LOG_DIRECTORY"] = logDirectory;
                         start.EnvironmentVariables["RYGT_HDD_STREAMING"] = hddStreaming ? "1" : "0";
+                        start.EnvironmentVariables["RYGT_ANTI_LAG"] = antiLag ? "1" : "0"; // PERF-210
                         started = Process.Start(start);
                     }
                     catch (Exception e)
