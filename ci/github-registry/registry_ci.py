@@ -1,4 +1,7 @@
 """Trusted GitHub workflow control: resolve GitLab development and publish CI packages."""
+import sys
+sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent))
+from github_source import wait_for_commit
 import hashlib
 import json
 import os
@@ -35,6 +38,11 @@ def renderer_revision(commit):
             policy.get('branch') != 'ryty-gpu'):
         raise ValueError('Unexpected renderer repository or branch')
     revision = policy.get('commit', '')
+    override = os.environ.get('RENDERER_OVERRIDE_SHA', '')
+    if override:
+        if revision != 'HEAD' and revision != override:
+            raise ValueError('Requested renderer conflicts with the runtime renderer pin')
+        return wait_for_commit('https://gitlab.com/api/v4/projects/rygt-team%2FShadGT', override)
     if revision == 'HEAD':
         url = 'https://gitlab.com/api/v4/projects/rygt-team%2FShadGT/repository/branches/ryty-gpu'
         with urllib.request.urlopen(url, timeout=60) as response:
@@ -46,8 +54,12 @@ def renderer_revision(commit):
 
 def resolve(channel=None):
     channels = selected_channels(channel)
-    with urllib.request.urlopen(API + '/repository/branches/development', timeout=60) as response:
-        commit = json.load(response)['commit']['id']
+    commit = os.environ.get('SOURCE_OVERRIDE_SHA', '')
+    if commit:
+        commit = wait_for_commit(API, commit)
+    else:
+        with urllib.request.urlopen(API + '/repository/branches/development', timeout=60) as response:
+            commit = json.load(response)['commit']['id']
     if not isinstance(commit, str) or not re.fullmatch('[0-9a-f]{40}', commit):
         raise ValueError('Invalid source commit')
     renderer = renderer_revision(commit)
