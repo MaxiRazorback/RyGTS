@@ -1837,7 +1837,7 @@ namespace RyGT
 
             var librariesCard = Section(right, "Libraries");
             var libraries = new FlowLayoutPanel { AutoSize = true, BackColor = Color.Transparent, FlowDirection = FlowDirection.TopDown, WrapContents = false };
-            foreach (var button in new[] { xessDownload, nvidiaDownload, addDlss })
+            foreach (var button in new[] { xessDownload, fsr4Download, nvidiaDownload, addDlss })
             {
                 button.Margin = new Padding(0, 2, 8, 4);
                 libraries.Controls.Add(button);
