@@ -1,10 +1,6 @@
 # RyGTS
 
 <h1 align="center">
-  <img src="assets/GranTurismoSportBanner.png" width="800" alt="Gran Turismo Sport banner">
-  <br>
-  <b>RyGTS</b>
-  <br>
   <sub>Gran Turismo Sport on PC</sub>
 </h1>
 
@@ -29,7 +25,7 @@ everything GT Sport needs added on top.
 | Race summary and results | Working |
 | Audio | Working |
 | Controllers | Working through SDL |
-| Steering Wheels | In Development |
+| Steering Wheels | Working |
 | Online features | In Development |
 | VR features | In Development |
 
@@ -213,6 +209,7 @@ Join our server for more updates: https://discord.gg/8dz4U9Nd8d
   (the AdHoc script compiler and disassembler), both MIT licensed. The launcher uses them to build
   the offline livery and decal scripts from your own game files, and Nenkai's research into
   Gran Turismo's formats and scripts made that work possible.
+- @dessierror For the artwork used in README.md
 - See [AUTHORS.md](AUTHORS.md).
 
 ## Disclaimer
@@ -227,6 +224,9 @@ Please do NOT ask shadps4 or Ryty servers for help from this project.
 ## License
 
 GNU General Public License version 2 only, as Ryty. The renderer (shadGT) is also GPL-2.0.
+
+Gran Turismo is a trademark of Sony Interactive Entertainment. This project is independent of Sony
+and Polyphony Digital.
 
 <p align="center">
   <img src="assets/GranTurismoSportBanner2.webp" width="800" alt="Gran Turismo Sport banner">
