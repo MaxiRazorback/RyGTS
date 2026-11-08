@@ -1,14 +1,31 @@
-﻿name: RyGTS Diagnostics CI package
+name: RyGTS Diagnostics CI package
 run-name: RyGTS Diagnostics development build
 on:
+  push:
+    branches: [development]
+  workflow_call:
+    inputs:
+      renderer_sha:
+        type: string
+        required: false
+        default: ''
+      source_sha:
+        type: string
+        required: false
+        default: ''
+      force:
+        type: boolean
+        required: false
+        default: false
+    secrets:
+      GITLAB_PACKAGE_TOKEN:
+        required: true
   workflow_dispatch:
     inputs:
       force:
         description: Rebuild even if this commit is already packaged
         type: boolean
         default: false
-  schedule:
-    - cron: '22,52 * * * *'
 permissions:
   contents: read
 concurrency:
@@ -18,17 +35,27 @@ jobs:
   source:
     runs-on: ubuntu-24.04
     outputs:
+      controller_commit: ${{ steps.controller.outputs.commit }}
       commit: ${{ steps.source.outputs.commit }}
       renderer_commit: ${{ steps.source.outputs.renderer_commit }}
       needed: ${{ steps.source.outputs.needed }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: RyGT-Team/RyGTS
+          ref: ${{ github.repository == 'RyGT-Team/RyGTS' && github.event_name == 'push' && github.sha || inputs.source_sha || 'development' }}
+          persist-credentials: false
+      - name: Select exact GitHub runtime revision
+        id: controller
+        run: echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - name: Test renderer revision and package controls
         run: python3 -m unittest discover -s ci/tests -p 'test_*.py'
       - id: source
         env:
+          SOURCE_OVERRIDE_SHA: ${{ steps.controller.outputs.commit }}
+          RENDERER_OVERRIDE_SHA: ${{ inputs.renderer_sha }}
           FORCE_BUILD: ${{ inputs.force }}
-        run: python3 ci/registry_ci.py resolve debug-ci
+        run: python3 ci/github-registry/registry_ci.py resolve debug-ci
   windows:
     needs: [source, tests]
     if: needs.source.outputs.needed == 'true'
@@ -123,6 +150,10 @@ jobs:
       CI_CHANNEL: debug-ci
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: RyGT-Team/RyGTS
+          ref: ${{ needs.source.outputs.controller_commit }}
+          persist-credentials: false
       - name: Fetch exact GitLab source
         run: |
           set -euo pipefail
@@ -162,4 +193,4 @@ jobs:
         env:
           GITLAB_PACKAGE_TOKEN: ${{ secrets.GITLAB_PACKAGE_TOKEN }}
           CI_CHANNEL: debug-ci
-        run: python3 ci/registry_ci.py publish debug-ci
+        run: python3 ci/github-registry/registry_ci.py publish debug-ci
